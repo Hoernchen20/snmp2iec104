@@ -3,6 +3,8 @@
 Supervisor of the `s2i_device` processes, one child per device (id = device
 name), added and removed by `s2i_snmp_mgr`. Generous restart intensity: a
 device that keeps crashing must not take the others down quickly.
+
+Owns the `s2i_trap_sources` table, which lives as long as the devices.
 """.
 -behaviour(supervisor).
 
@@ -19,4 +21,5 @@ child_spec() ->
 
 -spec init([]) -> {ok, {supervisor:sup_flags(), [supervisor:child_spec()]}}.
 init([]) ->
+    ok = s2i_trap_sources:new(),
     {ok, {#{strategy => one_for_one, intensity => 50, period => 60}, []}}.

@@ -55,7 +55,9 @@ start(Dir, #{port := Port, manager := Mgr} = Opts) ->
         snmpa_conf:notify_entry(atom_to_list(T) ++ "_" ++ atom_to_list(V), tag(T, V), T)
         || T <- [trap, inform], V <- [v1, v2c, v3], {T, V} =/= {inform, v1}]),
     ok = snmpa_conf:write_target_addr_config(Conf, "", [
-        snmpa_conf:target_addr_entry(tag(T, V), transportDomainUdpIpv4, Mgr, 1000, 3,
+        %% timeout in 1/100 s: informs are retransmitted after 1 s (the
+        %% first v3 inform always runs into a time-window report)
+        snmpa_conf:target_addr_entry(tag(T, V), transportDomainUdpIpv4, Mgr, 100, 3,
                                      tag(T, V), atom_to_list(V),
                                      case T of inform -> MgrEngine; trap -> "" end, [], 1500)
         || T <- [trap, inform], V <- [v1, v2c, v3], {T, V} =/= {inform, v1}]),

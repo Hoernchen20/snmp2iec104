@@ -93,9 +93,17 @@ unresolved_instances_are_reported_not_guessed_test() ->
     ?assertNot(is_map_key(?OPER(10103), Routes)),
     #{unresolved := []} = compile().
 
-index_to_slot_for_traps_test() ->
-    ?assertEqual(#{10101 => 1, 10103 => 3}, maps:get(slots, compile())),
-    ?assertEqual(#{10101 => 1}, maps:get(slots, s2i_routes:device(expansion(all_targets()), #{}))).
+templates_find_datapoints_for_trap_rules_test() ->
+    T = maps:get(templates, compile()),
+    ?assertEqual(?TEMP, maps:get({<<"temperature">>, device}, T)),
+    ?assertEqual(?OPER(10103), maps:get({<<"if{slot}/operStatus">>, 10103}, T)),
+    ?assertEqual([1, 3, 6, 1, 2, 1, 2, 2, 1, 7, 10101], maps:get({<<"if{slot}/adminStatus">>, 10101}, T)),
+    %% unresolved instances and datapoints without mappings are not there
+    T2 = maps:get(templates, s2i_routes:device(expansion(#{<<"default">> => [#{server => <<"scada1">>, coa => 1}]}),
+                                               #{})),
+    ?assertNot(is_map_key({<<"if{slot}/operStatus">>, 10103}, T2)),
+    ?assertNot(is_map_key({<<"if{slot}/inOctets">>, 10101}, T2)),
+    ?assert(is_map_key({<<"if{slot}/operStatus">>, 10101}, T2)).
 
 shared_oid_collects_all_routes_test() ->
     E = expansion(all_targets()),

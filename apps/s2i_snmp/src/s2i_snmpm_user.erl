@@ -7,10 +7,16 @@ as user data, so everything about its requests goes straight to it:
 - `{snmp_error, ReqId, Reason}`
 - `{snmp_report, Info}`: e.g. a v3 time-window report; it carries no request
   id, the device resends its outstanding requests
-- `{snmp_trap, Info}` / `{snmp_inform, Info}`
+- `{snmp_trap, Info}` / `{snmp_inform, Info}`, or `{snmp_trap_from, Addr,
+  Info}` for both when the source address is not the registered one
 
 The default user (data `default`) gets what cannot be attributed to a
-registered agent; traps from unregistered addresses are handled in phase 5.
+registered agent. Traps and informs from an unregistered address (typically
+another source port than the polled one) reach `handle_agent/5` and are
+passed to the device registered for the source IP (`s2i_trap_sources`); if
+several devices share that IP, the trap is dropped as ambiguous.
+
+Informs are acknowledged by snmpm itself before the callback runs.
 """.
 -behaviour(snmpm_user).
 
@@ -52,6 +58,22 @@ handle_inform(Target, _Info, default) ->
     logger:debug("SNMP inform from ~p without a device", [Target]),
     ignore.
 
+handle_agent(_Domain, {Ip, _Port} = Addr, Type, Info, _Data) when Type =:= trap; Type =:= inform ->
+    case s2i_trap_sources:lookup(Ip) of
+        [Pid] ->
+            Pid ! {snmp_trap_from, Addr, Info},
+            ignore;
+        [] ->
+            logger:debug("SNMP ~p from unknown agent ~ts", [Type, format(Addr)]),
+            ignore;
+        [_ | _] ->
+            logger:warning("SNMP ~p from ~ts dropped: several devices use this IP address",
+                           [Type, format(Addr)]),
+            ignore
+    end;
 handle_agent(Domain, Addr, Type, _Info, _Data) ->
     logger:debug("SNMP ~p from unregistered agent ~p ~p", [Type, Domain, Addr]),
     ignore.
+
+format({Ip, Port}) ->
+    io_lib:format("~ts:~b", [inet:ntoa(Ip), Port]).

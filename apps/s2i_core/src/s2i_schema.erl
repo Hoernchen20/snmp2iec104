@@ -114,7 +114,8 @@ spec(profile) ->
       {ioa_stride, {int, 1, 65535}, {default, 1}},
       {poll_groups, {map_of, name, {int, 1000, 86400000}, #{}}, {default, #{}}},
       {resolvers, {map_of, name, resolver(), #{}}, {default, #{}}},
-      {datapoints, {list, datapoint(), #{unique_by => [name]}}, {default, []}}],
+      {datapoints, {list, datapoint(), #{unique_by => [name]}}, {default, []}},
+      {trap_rules, {list, trap_rule(), #{unique_by => [name]}}, {default, []}}],
      [fun check_profile/1]};
 spec(_) ->
     undefined.
@@ -218,6 +219,35 @@ datapoint() ->
       {mappings, {list, mapping(), #{}}, {default, []}}],
      []}.
 
+%% docs/DESIGN.md §5.4. References to the profile's datapoints are checked
+%% in check_profile/1.
+trap_rule() ->
+    {object,
+     [{name, name, required},
+      {description, text, optional},
+      {trap_oid, oid, required},
+      {conditions, {list, trap_condition(), #{}}, {default, []}},
+      {datapoint, dp_name, required},
+      {instance, {object, [{oid, oid, required},
+                           {from, {enum, [suffix, value]}, {default, suffix}}], []}, optional},
+      {set, snmp_value(), optional},
+      {take, oid, optional},
+      {auto_reset, {object, [{delay, {int, 100, 86400000}, required},
+                             {value, snmp_value(), required}], []}, optional},
+      {confirm_get_after, {int, 0, 3600000}, optional}],
+     [fun check_trap_rule/1]}.
+
+trap_condition() ->
+    {object,
+     [{oid, oid, required},
+      {op, {enum, [eq, ne]}, {default, eq}},
+      {value, snmp_value(), required}],
+     []}.
+
+%% A constant as an SNMP value: integer (any integer syntax) or octet string.
+snmp_value() ->
+    {one_of, [{int, -(1 bsl 63), (1 bsl 64) - 1}, text]}.
+
 mapping() ->
     {object,
      [{target, name, {default, <<"default">>}},
@@ -276,13 +306,32 @@ check_instance(#{index := _}) -> [];
 check_instance(#{key := _}) -> [];
 check_instance(_) -> [{[], index_or_key_required}].
 
-check_profile(#{ioa_stride := Stride, poll_groups := Groups, datapoints := Dps}) ->
+check_profile(#{ioa_stride := Stride, poll_groups := Groups, datapoints := Dps} = Profile) ->
     Indexed = enumerate(Dps),
     PerDp = lists:flatmap(
               fun({I, Dp}) ->
                       [{[datapoints, I | P], E} || {P, E} <- check_datapoint(Dp, Stride, Groups)]
               end, Indexed),
-    PerDp ++ duplicate_offsets(Indexed).
+    Scopes = maps:from_list([{N, S} || #{name := N, scope := S} <- Dps]),
+    PerRule = [{[trap_rules, I | P], E}
+               || {I, R} <- enumerate(maps:get(trap_rules, Profile, [])),
+                  {P, E} <- check_rule_datapoint(R, Scopes)],
+    PerDp ++ duplicate_offsets(Indexed) ++ PerRule.
+
+check_trap_rule(R) ->
+    case {maps:is_key(set, R), maps:is_key(take, R)} of
+        {true, true} -> [{[take], set_and_take_exclusive}];
+        {false, false} -> [{[set], set_or_take_required}];
+        _ -> []
+    end.
+
+check_rule_datapoint(#{datapoint := D} = R, Scopes) ->
+    case {maps:find(D, Scopes), maps:is_key(instance, R)} of
+        {error, _} -> [{[datapoint], unknown_datapoint}];
+        {{ok, instance}, false} -> [{[instance], required_for_instance_scope}];
+        {{ok, device}, true} -> [{[instance], not_allowed_for_device_scope}];
+        _ -> []
+    end.
 
 check_datapoint(#{name := Name, oid := Oid, scope := Scope} = Dp, Stride, Groups) ->
     HasIndex = has_index_placeholder(Oid),

@@ -241,7 +241,9 @@ redundancy_groups(Config) ->
     Port = ?config(port, Config),
     Red = #{mode => multiple, groups => [#{name => <<"local">>, match => [<<"127.0.0.0/8">>]}]},
     ok = activate_and_sync([{server, server(Port, #{redundancy => Red})}]),
-    S = ?C:connect(Port),
+    %% the restart with redundancy may find the port still in use; the
+    %% manager retries every 2 s
+    S = retry_connect(Port, 40),
     ok = s2i_iec:publish(<<"scada1">>, [{{1, 101}, #{type => m_sp_tb_1, value => true}}]),
     [#object{ioa = 101, value = true}] = recv_objects(S, 1).
 

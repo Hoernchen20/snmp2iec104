@@ -1,7 +1,7 @@
 # snmp2iec104 — Design
 
-Status: **phases 0–4 implemented** (config, expansion, IEC side, SNMP
-polling); traps, REST and UI follow (§12). Scope of v1: monitoring direction
+Status: **phases 0–5 implemented** (config, expansion, IEC side, SNMP
+polling, traps/informs); REST and UI follow (§12). Scope of v1: monitoring direction
 only, SNMP → IEC 60870-5-104.
 
 ## 1. Scope and goals
@@ -87,10 +87,11 @@ s2i_sup                                 rest_for_one
 ├── s2i_snmp_sup        rest_for_one
 │   ├── snmpm           OTP SNMP manager (snmpm_supervisor, via s2i_snmpm);
 │   │                   default user s2i_snmpm_user (callback module)
-│   ├── s2i_devices_sup one_for_one, one child per device
+│   ├── s2i_devices_sup one_for_one, one child per device; owns the
+│   │   │               s2i_trap_sources table (source IP → device)
 │   │   └── s2i_device  gen_server: agent/USM registration, instance
 │   │                   resolution, poll groups (drift-free schedule),
-│   │                   health (up | degraded | down), trap intake (phase 5)
+│   │                   health (up | degraded | down), traps/informs
 │   └── s2i_snmp_mgr    reconciler: desired devices ↔ running s2i_device
 ├── s2i_debug           ring buffers (trap log, SNMP trace, events), pg topics
 └── s2i_web_sup         cowboy listener(s), session table
@@ -139,7 +140,7 @@ user/sec level/auth/priv + engine id), `timeout`, `retries`, `max_varbinds`,
   `instance`), optional `poll_group`, and `mappings`: a list of
   `#{target, ioa_offset, type, transform, deadband}`
 - `ioa_stride`: IOA distance between instances
-- `trap_rules`: see 5.4 (phase 5)
+- `trap_rules`: see 5.4
 
 **Targets (routing).** A profile never names an IEC server: its mappings
 carry a **target label** (default `"default"`). Each device binds labels to
@@ -217,14 +218,18 @@ the OID. If a device renumbers its interfaces, a static OID silently reads a
 different port (or nothing), so **wrong data would be sent under a valid IOA**.
 Therefore:
 
-- `s2i_device` keeps a resolved map `Key → Index` (and the reverse
-  `Index → Slot`, needed to route traps such as linkDown by their ifIndex).
+- `s2i_device` keeps a resolved map `Key → Index`; the compiled routes map
+  `{Template, Index}` back to the datapoint, so trap rules find the datapoint
+  of the ifIndex a linkDown carries (per template: different tables of a
+  device have different index spaces).
 - Resolution (a walk of the resolver column) runs on device start, on
   reconnect after `down`, and on **reboot detection**: every poll group of a
   device includes `sysUpTime.0`; a value lower than the previous one means the
   agent restarted. The same signal resets `rate`/`counter` transforms
   (counter discontinuity).
-- If the map changes, the device's routes are rebuilt (only for that device).
+- If the map changes, the device's routes are rebuilt (only for that
+  device); newly resolved datapoints are read at once with a one-off GET
+  instead of waiting for the next poll of their group.
 - Key not found → datapoints of that instance are published `invalid`, and a
   warning goes to the log and the debug UI. Never fall back to a guessed index.
 - Static `index` remains available for devices with guaranteed persistence
@@ -244,21 +249,50 @@ Trap handling, in this order:
    value. RFC 2863 `linkDown`/`linkUp` carry `ifAdminStatus.<i>` and
    `ifOperStatus.<i>`, so standard link traps work without explicit rules.
 2. **Explicit trap rules** (from the profile) for traps that do not carry the
-   value (instance taken from a varbind is mapped back to a slot via the
-   reverse resolver map): `match` on trap OID (v1 enterprise/generic/specific normalised to the
-   SNMPv2 `snmpTrapOID` form) + optional varbind conditions → `set` a constant
-   or `take` a value from a named varbind, with optional `auto_reset_after`.
-3. Unmatched traps go only to the debug trap log.
+   value, applied after the varbind match (so a rule wins on the same
+   datapoint). Rules match on the trap OID (SNMPv1 enterprise/generic/specific
+   normalised to the SNMPv2 `snmpTrapOID` form, RFC 3584 §3.1) and optional
+   varbind conditions, then `set` a constant or `take` the value of a varbind.
+   The value goes through the datapoint's transforms like a polled value.
+   For an instance-scope datapoint the rule says where the table index is:
+   the last OID component of a varbind (`suffix`, e.g. `ifIndex.<i>`) or its
+   value (`value`). An index that is not configured or not resolved matches
+   nothing; there is no guessing.
+3. Unmatched traps are counted per device (`traps`, `unmatched` in the
+   device status) and logged at debug level; the trap log of the debug UI
+   follows in phase 7.
 
-Optional per rule: `confirm_get_after` (ms) — schedule an immediate GET of the
-affected datapoints to confirm the trap.
+```erlang
+trap_rules =>
+  [#{name => <<"link-down">>,                          %% unique per profile
+     trap_oid => <<"1.3.6.1.6.3.1.1.5.3">>,            %% linkDown (v1: generic 2)
+     conditions => [#{oid => <<"1.3.6.1.2.1.2.2.1.7">>, op => eq, value => 1}],  %% optional
+     datapoint => <<"if{slot}/operStatus">>,           %% template name
+     instance => #{oid => <<"1.3.6.1.2.1.2.2.1.1">>, from => value},  %% instance scope only
+     set => 2},                                        %% or take => VarbindOid
+   #{name => <<"psu-alarm">>, trap_oid => <<"1.3.6.1.4.1.9.0.7">>,
+     datapoint => <<"psu_alarm">>, set => 1,
+     auto_reset => #{delay => 60000, value => 0},      %% optional
+     confirm_get_after => 500}]                        %% optional
+```
+
+A condition matches the first varbind whose OID is the condition's OID or
+below it (table column); integer constants equal any integer syntax, strings
+equal octet strings (or an OID in dotted form). A missing varbind fails the
+condition. `auto_reset` is one timer per datapoint, restarted by every
+matching trap. `confirm_get_after` (ms) schedules a one-off GET of the
+datapoint to confirm the trap; failures only log. Trap-only datapoints (no
+`poll_group`) are invalid until their first trap, and again after the device
+was `down`.
 
 **Ordering rule (poll vs trap race).** Each datapoint records
 `last_trap_at` (monotonic). A poll response is applied to a datapoint only if
 its request was *sent* after `last_trap_at`; otherwise that value is discarded
 for this cycle. This prevents a poll sampled before a link-down from
 overwriting the trap. Lost traps (UDP) are corrected by the next poll.
-Devices that support informs should use them (acknowledged).
+Devices that support informs should use them (acknowledged by snmpm before
+the gateway sees them; an SNMPv3 inform may arrive twice, see §8, which is
+harmless because values are only sent when they change).
 
 ### 5.5 Mapping and transforms
 
@@ -382,16 +416,19 @@ s2i_routes  ETS {DeviceId, Oid} → [Route]        (lookup in caller, no hub pro
             compiled by s2i_routes:device(Expansion, Resolved): routes, poll
             groups (+ sysUpTime.0), unresolved datapoints, index → slot
     ▼
-ordering check (sent_at > last_trap_at, phase 5) → s2i_sample (pure):
+ordering check (sent_at > last_trap_at) → s2i_sample (pure):
 transform → only changes / deadband → encode
     ▼
 group by server → s2i_iec:publish/2 | s2i_iec:invalidate/2
     └─► s2i_live + iec60870_server:update (cast, batched)
         + pg debug topic (only if subscribed, phase 7)
 
-s2i_snmpm_user ── trap/inform ──► s2i_device (by source IP)
+s2i_snmpm_user ── trap/inform ──► s2i_device (registered address: own
+    │                                 snmpm user; other port: s2i_trap_sources)
     ▼
-varbind match / trap rules → same path as above (sets last_trap_at)
+s2i_trap_match (pure): normalise, varbind match, trap rules
+    ▼
+same path as above (sets last_trap_at); auto-reset timers, confirm GETs
 ```
 
 - Timestamps: CP56Time2a from `received_at` (poll) or trap reception time;
@@ -466,9 +503,14 @@ varbind match / trap rules → same path as above (sets last_trap_at)
   (RFC 3414 §4 probe from a separate socket); snmpm has no discovery.
 - IPv4 only for now (snmpm transport `transportDomainUdpIpv4`).
 - Traps arriving from an unregistered `{IP, Port}` (common: different source
-  port) land in `handle_agent/5`; `s2i_snmpm_user` resolves the device by IP.
-- SNMPv3 traps: the device's engine id must be configured (it is the
-  authoritative engine for traps); informs use the gateway's engine id.
+  port) land in `handle_agent/5`; `s2i_snmpm_user` resolves the device by IP
+  (`s2i_trap_sources`, filled by the devices when registered). If several
+  devices share the IP, the trap is dropped with a warning.
+- SNMPv3 traps: the device's engine id must be known (configured or
+  discovered; it is the authoritative engine for traps). Informs use the
+  gateway's engine id (`s2i_snmpm:engine_id/0`): every v3 device also
+  registers its USM user under it. Devices sharing a user name must use the
+  same passwords for informs (the last registration wins).
 - **Spike (phase 4a), `s2i_snmpm_spike_SUITE` against `snmpa`:** confirmed
   the behaviours above, plus what the implementation relies on:
   - `snmpm:start_link/1` returns `ok`, not `{ok, Pid}`: the gateway
@@ -589,6 +631,7 @@ configuration.
 | 11 | Routing in profiles | target labels in profile mappings, bound to servers per device |
 | 12 | Secrets at rest | AES-256-GCM envelopes, key from a 0600 key file (not env) |
 | 13 | Poll groups | timers inside the one `s2i_device` process per device (own snmpm user each), not one process per group |
+| 14 | Trap rule targets | datapoint template + table index from a varbind (`suffix` or `value`), looked up per template in the compiled routes; never by guessed index |
 
 ## 15. Open points and planned extensions
 

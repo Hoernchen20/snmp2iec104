@@ -1,7 +1,7 @@
 -module(s2i_snmp_SUITE).
 -moduledoc """
-SNMP polling end to end: activation → device processes → snmpm → agent →
-transforms → live values of the IEC points (phase 4).
+SNMP polling and traps end to end: activation → device processes → snmpm →
+agent → transforms → live values of the IEC points (phases 4 and 5).
 
 v1/v2c run against `s2i_fake_agent` (the test scripts values, tables,
 silence and reboots); v3 runs against OTP's `snmpa` (`s2i_test_agent`).
@@ -26,7 +26,14 @@ silence and reboots); v3 runs against OTP's `snmpa` (`s2i_test_agent`).
          v3_auth_priv_with_configured_engine_id/1,
          v3_engine_id_discovery/1,
          v3_auth_protocols/1,
-         v3_wrong_password_never_gets_valid/1]).
+         v3_wrong_password_never_gets_valid/1,
+         v2c_trap_updates_by_varbind_match/1,
+         trap_from_other_port_is_routed_by_ip/1,
+         v1_trap_rules_with_instance_and_auto_reset/1,
+         trap_rule_confirmed_by_get/1,
+         v2c_inform_is_acknowledged_and_applied/1,
+         poll_sent_before_trap_is_discarded/1,
+         v3_traps_and_informs/1]).
 
 -define(ADMIN, <<"test">>).
 -define(SERVER, <<"scada1">>).
@@ -41,6 +48,14 @@ silence and reboots); v3 runs against OTP's `snmpa` (`s2i_test_agent`).
 -define(IOA_IF1, 112).
 -define(IOA_COMM, 50).
 -define(IOA_SERVICES, 120).
+-define(IOA_ALARM, 105).
+-define(IOA_RESTARTED, 131).
+-define(IF_INDEX(I), [1, 3, 6, 1, 2, 1, 2, 2, 1, 1, I]).
+-define(IF_ADMIN(I), [1, 3, 6, 1, 2, 1, 2, 2, 1, 7, I]).
+-define(LINK_DOWN, [1, 3, 6, 1, 6, 3, 1, 1, 5, 3]).
+-define(COLD_START, [1, 3, 6, 1, 6, 3, 1, 1, 5, 1]).
+%% "mgrEngine", the manager engine id s2i_test_agent sends v3 informs to
+-define(GATEWAY_ENGINE, <<"6d6772456e67696e65">>).
 
 suite() -> [{timetrap, {seconds, 90}}].
 
@@ -50,11 +65,14 @@ all() ->
      instance_resolution_follows_renumbering, lost_instance_becomes_invalid,
      ambiguous_instance_is_not_resolved, chunks_respect_max_varbinds,
      removed_device_stops_polling, changed_device_restarts, disabled_device_is_not_polled,
-     {group, v3}].
+     {group, traps}, {group, v3}].
 
 groups() ->
-    [{v3, [], [v3_auth_priv_with_configured_engine_id, v3_engine_id_discovery,
-               v3_auth_protocols, v3_wrong_password_never_gets_valid]}].
+    [{traps, [], [v2c_trap_updates_by_varbind_match, trap_from_other_port_is_routed_by_ip,
+                  v1_trap_rules_with_instance_and_auto_reset, trap_rule_confirmed_by_get,
+                  v2c_inform_is_acknowledged_and_applied, poll_sent_before_trap_is_discarded]},
+     {v3, [], [v3_auth_priv_with_configured_engine_id, v3_engine_id_discovery,
+               v3_auth_protocols, v3_wrong_password_never_gets_valid, v3_traps_and_informs]}].
 
 init_per_suite(Config) ->
     {ok, _} = application:ensure_all_started(iec60870),
@@ -72,6 +90,7 @@ init_per_testcase(TC, Config) ->
     ok = application:set_env(s2i_snmp, ip, "127.0.0.1"),
     MgrPort = free_udp_port(),
     ok = application:set_env(s2i_snmp, port, MgrPort),
+    ok = application:set_env(s2i_snmp, engine_id, ?GATEWAY_ENGINE),
     {ok, C} = s2i_config:start_link(),
     unlink(C),
     {ok, I} = s2i_iec_sup:start_link(),
@@ -90,7 +109,7 @@ init_per_testcase(TC, Config) ->
             end,
     {ok, S} = s2i_snmp_sup:start_link(),
     unlink(S),
-    [{agent, Agent}, {iec_port, free_tcp_port()} | Config].
+    [{agent, Agent}, {iec_port, free_tcp_port()}, {mgr_port, MgrPort} | Config].
 
 end_per_testcase(_TC, Config) ->
     ok = stop(s2i_snmp_sup),
@@ -412,3 +431,156 @@ v3_wrong_password_never_gets_valid(Config) ->
               {device, v3_device(Config, <<"agent">>, ?IOA_SERVICES, Snmp)}]),
     wait(fun() -> health(<<"agent">>) =:= down end),
     {_, [invalid]} = live(?IOA_SERVICES).
+
+%%% ---------------------------------------------------------------------------
+%%% traps and informs (fake agent, v1/v2c)
+%%% ---------------------------------------------------------------------------
+
+%% profile() with a slow poll group (one poll at start, then only traps
+%% change values), a trap-only alarm and trap rules
+trap_profile() ->
+    P = profile(),
+    Slow = [Dp#{poll_group => <<"slow">>} || Dp <- maps:get(datapoints, P)],
+    P#{poll_groups => #{<<"slow">> => 3600000},
+       datapoints => Slow ++
+           [#{name => <<"alarm">>, oid => <<"1.3.6.1.4.1.99999.5.0">>,
+              mappings => [#{ioa_offset => 5, type => m_sp_tb_1,
+                             transform => #{kind => enum, map => #{<<"1">> => true, <<"0">> => false}}}]}],
+       trap_rules =>
+           [%% SNMPv1 linkDown carries only ifIndex.<i>
+            #{name => <<"link-down">>, trap_oid => <<"1.3.6.1.6.3.1.1.5.3">>,
+              datapoint => <<"if{slot}/oper">>,
+              instance => #{oid => <<"1.3.6.1.2.1.2.2.1.1">>, from => value}, set => 2},
+            #{name => <<"alarm">>, trap_oid => <<"1.3.6.1.4.1.99999.0.1">>, datapoint => <<"alarm">>,
+              conditions => [#{oid => <<"1.3.6.1.4.1.99999.6">>, value => <<"major">>}],
+              set => 1, auto_reset => #{delay => 800, value => 0}},
+            #{name => <<"temperature">>, trap_oid => <<"1.3.6.1.4.1.99999.0.2">>,
+              datapoint => <<"temperature">>, take => <<"1.3.6.1.4.1.99999.3">>,
+              confirm_get_after => 1000}]}.
+
+start_traps(Config, DeviceExtra) ->
+    activate([{server, server(?config(iec_port, Config))}, {profile, trap_profile()},
+              {device, device(fake_port(Config), DeviceExtra)}]),
+    wait_valid(?IOA_IF1, true),
+    wait_valid(?IOA_TEMP, 21.5).
+
+notify(Config, Opts) ->
+    ok = s2i_fake_agent:notify(agent(Config), {{127, 0, 0, 1}, ?config(mgr_port, Config)}, Opts).
+
+link_down_v2c(Opts) ->
+    maps:merge(#{trap => ?LINK_DOWN,
+                 varbinds => [{?IF_INDEX(5), 'INTEGER', 5}, {?IF_ADMIN(5), 'INTEGER', 1},
+                              {?IF_OPER(5), 'INTEGER', 2}]}, Opts).
+
+traps(Name) ->
+    {ok, #{traps := T, unmatched := U}} = s2i_device:status(Name),
+    {T, U}.
+
+v2c_trap_updates_by_varbind_match(Config) ->
+    start_traps(Config, #{}),
+    %% RFC 2863 linkDown: ifOperStatus.5 = down(2) is a datapoint OID
+    notify(Config, link_down_v2c(#{})),
+    wait_valid(?IOA_IF1, false),
+    ?assertEqual({1, 0}, traps(<<"sw-a">>)),
+    %% a trap nothing is configured for: counted, no value changes
+    notify(Config, #{trap => ?COLD_START}),
+    wait(fun() -> traps(<<"sw-a">>) =:= {2, 1} end),
+    {ok, 21.5} = valid(?IOA_TEMP).
+
+trap_from_other_port_is_routed_by_ip(Config) ->
+    start_traps(Config, #{}),
+    notify(Config, link_down_v2c(#{from => other})),
+    wait_valid(?IOA_IF1, false).
+
+v1_trap_rules_with_instance_and_auto_reset(Config) ->
+    start_traps(Config, #{snmp => #{version => v1, community => <<"public">>}}),
+    %% generic linkDown (2): the instance comes from the ifIndex value
+    notify(Config, #{version => v1, trap => {[1, 3, 6, 1, 4, 1, 99999], 2, 0},
+                     varbinds => [{?IF_INDEX(5), 'INTEGER', 5}]}),
+    wait_valid(?IOA_IF1, false),
+    %% enterprise specific 1 → 1.3.6.1.4.1.99999.0.1; the condition must hold
+    Alarm = fun(Severity) ->
+                    notify(Config, #{version => v1, trap => {[1, 3, 6, 1, 4, 1, 99999], 6, 1},
+                                     varbinds => [{?ENT ++ [6, 1], 'OCTET STRING', Severity}]})
+            end,
+    Alarm("minor"),
+    wait(fun() -> traps(<<"sw-a">>) =:= {2, 1} end),
+    {_, [invalid]} = live(?IOA_ALARM),
+    Alarm("major"),
+    wait_valid(?IOA_ALARM, true),
+    %% auto reset after 800 ms
+    wait_valid(?IOA_ALARM, false).
+
+trap_rule_confirmed_by_get(Config) ->
+    A = agent(Config),
+    start_traps(Config, #{}),
+    Gets = length(s2i_fake_agent:gets(A)),
+    %% the trap carries a value; the GET 1 s later reads the real one
+    notify(Config, #{trap => ?ENT ++ [0, 2], varbinds => [{?ENT ++ [3, 0], 'INTEGER', 999}]}),
+    wait_valid(?IOA_TEMP, 99.9),
+    wait_valid(?IOA_TEMP, 21.5),
+    ?assertEqual([[?TEMP]], lists:nthtail(Gets, s2i_fake_agent:gets(A))).
+
+v2c_inform_is_acknowledged_and_applied(Config) ->
+    start_traps(Config, #{}),
+    notify(Config, link_down_v2c(#{type => inform})),
+    wait_valid(?IOA_IF1, false),
+    wait(fun() -> s2i_fake_agent:acks(agent(Config)) =:= 1 end).
+
+%% A poll response sampled before a link went down arrives after the
+%% linkDown trap: it must not bring the old state back.
+poll_sent_before_trap_is_discarded(Config) ->
+    A = agent(Config),
+    start_fake(Config, #{timeout => 3000}),
+    wait_valid(?IOA_IF1, true),
+    ok = s2i_fake_agent:delay(A, 600),
+    N = length(s2i_fake_agent:gets(A)),
+    wait_for(fun() -> length(s2i_fake_agent:gets(A)) > N end, 3000),
+    %% that request has read up(1) and is answered in 600 ms
+    ok = s2i_fake_agent:set(A, ?IF_OPER(5), {'INTEGER', 2}),
+    notify(Config, link_down_v2c(#{})),
+    wait_valid(?IOA_IF1, false),
+    %% the late response and every later poll keep it down
+    Seen = [begin timer:sleep(20), live(?IOA_IF1) end || _ <- lists:seq(1, 75)],
+    ?assertEqual([{false, []}], lists:usort(Seen)).
+
+wait_for(Fun, Ms) when Ms =< 0 -> ct:fail({condition_not_met, erlang:fun_info(Fun, name)});
+wait_for(Fun, Ms) ->
+    case Fun() of
+        true -> ok;
+        false -> timer:sleep(2), wait_for(Fun, Ms - 2)
+    end.
+
+%%% ---------------------------------------------------------------------------
+%%% traps and informs (snmpa, v3)
+%%% ---------------------------------------------------------------------------
+
+v3_trap_profile() ->
+    P = v3_profile(),
+    P#{datapoints => maps:get(datapoints, P) ++
+           [#{name => <<"restarted">>, oid => <<"1.3.6.1.4.1.99999.9.0">>,
+              mappings => [#{ioa_offset => 11, type => m_sp_tb_1,
+                             transform => #{kind => enum, map => #{<<"1">> => true, <<"0">> => false}}}]}],
+       trap_rules => [#{name => <<"cold-start">>, trap_oid => <<"1.3.6.1.6.3.1.1.5.1">>,
+                        datapoint => <<"restarted">>, set => 1,
+                        auto_reset => #{delay => 500, value => 0}}]}.
+
+%% Traps are authenticated with the agent's engine id, informs with the
+%% gateway's (the agent's first inform runs into a time-window report and
+%% is retransmitted).
+v3_traps_and_informs(Config) ->
+    Snmp = (v3("u_sha_aes", sha, aes))#{engine_id => agent_engine_hex()},
+    activate([{server, server(?config(iec_port, Config))}, {profile, v3_trap_profile()},
+              {device, v3_device(Config, <<"agent">>, ?IOA_SERVICES, Snmp)}]),
+    wait_valid(?IOA_SERVICES, 72),
+    ?assertEqual(?GATEWAY_ENGINE, s2i_snmpm:engine_id()),
+    lists:foreach(fun({Type, Vsn}) ->
+                          s2i_test_agent:notify(Type, Vsn),
+                          try
+                              wait_valid(?IOA_RESTARTED, true),
+                              wait_valid(?IOA_RESTARTED, false)
+                          catch exit:{test_case_failed, R} ->
+                                  ct:fail({Type, Vsn, R, s2i_device:status(<<"agent">>)})
+                          end
+                  end, [{trap, v3}, {inform, v3}]),
+    {ok, #{unmatched := 0}} = s2i_device:status(<<"agent">>).

@@ -3,7 +3,7 @@
 Gateway from SNMP (v1/v2c/v3, polling and traps) to IEC 60870-5-104, built on
 Erlang/OTP and [erl60870](https://github.com/Hoernchen20/erl60870).
 
-> **Status:** phase 4, SNMP polling (v1/v2c/v3 incl. engine id discovery, instance resolution, reboot detection, device health and comm status) on top of the IEC 104 side. See [docs/DESIGN.md](docs/DESIGN.md)
+> **Status:** phase 5, traps and informs (v1/v2c/v3; varbind match, trap rules, ordering rule against polls, auto reset, confirmation GET) on top of SNMP polling (v1/v2c/v3 incl. engine id discovery, instance resolution, reboot detection, device health and comm status) and the IEC 104 side. See [docs/DESIGN.md](docs/DESIGN.md)
 > for the architecture and the implementation phases.
 
 ## Layout

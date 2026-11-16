@@ -17,7 +17,7 @@ Agents and users are registered at runtime by the devices; the default user
 (`s2i_snmpm_user`) receives what arrives from unregistered addresses.
 """.
 
--export([child_spec/0, start_link/0, engine_id/0, manager_conf/3]).
+-export([child_spec/0, start_link/0, engine_id/0, local_engine_id/0, manager_conf/3]).
 
 -define(MAX_MESSAGE_SIZE, 65507).
 
@@ -68,7 +68,12 @@ manager_conf(Ip, Port, EngineId) ->
 -doc "The gateway's SNMP engine id (hex), e.g. for configuring informs on devices.".
 -spec engine_id() -> binary().
 engine_id() ->
-    binary:encode_hex(list_to_binary(persistent_term:get({?MODULE, engine_id})), lowercase).
+    binary:encode_hex(list_to_binary(local_engine_id()), lowercase).
+
+-doc "The gateway's SNMP engine id as snmpm uses it (octets as a list).".
+-spec local_engine_id() -> string().
+local_engine_id() ->
+    persistent_term:get({?MODULE, engine_id}).
 
 load_engine_id(Dir) ->
     case env(engine_id, undefined) of

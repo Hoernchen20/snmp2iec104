@@ -24,6 +24,23 @@ Reboot detection: `sysUpTime.0` is in every poll group; a lower value from a
 newer request resets the transform states (counter discontinuity) and
 resolves the instances again. When the resolution changes, the routes are
 rebuilt; points whose instance is lost are invalidated.
+
+Traps and informs (§5.4) arrive from the registered address through the
+device's snmpm user, or from another port of the same IP through
+`s2i_trap_sources`. `s2i_trap_match` turns them into values for the
+device's datapoints; they are published at once and recorded in `trap_at`.
+Ordering rule: a polled value whose request was sent before the last trap
+of its datapoint is discarded. A rule may reset its datapoint after a delay
+(`auto_reset`: one timer per datapoint, restarted by every matching trap)
+or schedule a GET of it (`confirm_get_after`). Such one-off GETs (also
+used for newly resolved instances, so they need not wait a whole poll
+interval) only log failures; they do not count for health. Trap-only datapoints stay invalid until
+their first trap, and after `down` until the next one.
+
+SNMPv3: the USM user is registered under the agent's engine id (polling,
+traps) and under the gateway's engine id (informs, where the gateway is the
+authoritative engine). Devices that share a user name must use the same
+passwords for informs: the last registration wins.
 """.
 -behaviour(gen_server).
 
@@ -63,9 +80,11 @@ init({Name, #{device := Device, profile := Profile, expansion := Exp}}) ->
     Resolvers = s2i_resolve:columns(Device, Profile),
     State = #{name => Name, device => Device, profile => Profile, exp => Exp,
               user => s2i_snmp_conf:user(Name), target => s2i_snmp_conf:target(Name),
-              snmp => undefined, usm => undefined, registered => false,
+              snmp => undefined, usm => [], registered => false,
               resolvers => Resolvers, resolved => #{}, resolve => idle, walk => undefined,
               routes => s2i_routes:device(Exp, #{}), states => #{},
+              rules => s2i_trap_match:compile(maps:get(trap_rules, Profile, [])),
+              trap_at => #{}, resets => #{}, traps => 0, unmatched => 0, ip => undefined,
               groups => #{}, reqs => #{},
               health => unknown, failures => 0, comm => undefined, uptime => undefined,
               overruns => 0, cycles => 0, last_ok => undefined, error => undefined},
@@ -75,7 +94,8 @@ handle_continue(register, State) ->
     {noreply, register(State)}.
 
 handle_call(status, _From, State) ->
-    Status = maps:with([health, failures, overruns, cycles, last_ok, error, resolved], State),
+    Status = maps:with([health, failures, overruns, cycles, last_ok, error, resolved, traps, unmatched],
+                       State),
     Unresolved = [Id || #{id := Id} <- maps:get(unresolved, maps:get(routes, State))],
     {reply, Status#{unresolved => Unresolved}, State};
 handle_call(_Req, _From, State) ->
@@ -111,10 +131,19 @@ handle_info({snmp_error, ReqId, Reason}, #{reqs := Reqs} = State) ->
     end;
 handle_info({snmp_report, _Info}, State) ->
     {noreply, resend_after_report(State)};
-handle_info({snmp_trap, _Info}, State) ->
-    {noreply, State};                           % phase 5
-handle_info({snmp_inform, _Info}, State) ->
-    {noreply, State};                           % phase 5
+handle_info({snmp_trap, Info}, State) ->
+    {noreply, trap(Info, State)};
+handle_info({snmp_inform, Info}, State) ->
+    {noreply, trap(Info, State)};
+handle_info({snmp_trap_from, _Addr, Info}, State) ->
+    {noreply, trap(Info, State)};
+handle_info({timeout, Ref, {auto_reset, Oid, Value}}, #{resets := Resets} = State) ->
+    case Resets of
+        #{Oid := Ref} -> {noreply, trap_values([{Oid, Value}], State#{resets := maps:remove(Oid, Resets)})};
+        _ -> {noreply, State}
+    end;
+handle_info({timeout, _, {get_once, Oids}}, State) ->
+    {noreply, get_once(Oids, State)};
 handle_info(_Msg, State) ->
     {noreply, State}.
 
@@ -135,8 +164,9 @@ register(#{device := #{host := Host, snmp := Sealed, timeout := Timeout, retries
         ok ?= snmpm:register_user(User, s2i_snmpm_user, self()),
         {ok, Usm} ?= register_usm(Snmp, EngineId),
         ok ?= snmpm:register_agent(User, Target, s2i_snmp_conf:agent(Device#{snmp := Snmp}, Ip, EngineId)),
+        ok = s2i_trap_sources:add(Ip),
         logger:info("SNMP device ~ts registered (~ts)", [maps:get(name, State), inet:ntoa(Ip)]),
-        start_polling(State#{registered := true, usm := Usm, snmp := Snmp, error := undefined})
+        start_polling(State#{registered := true, usm := Usm, snmp := Snmp, ip := Ip, error := undefined})
     else
         {error, Reason} ->
             logger:warning("SNMP device ~ts not registered: ~p; retrying", [maps:get(name, State), Reason]),
@@ -144,14 +174,12 @@ register(#{device := #{host := Host, snmp := Sealed, timeout := Timeout, retries
             failed_cycle(deregister(State#{error := Reason}))
     end.
 
-deregister(#{user := User, target := Target, usm := Usm} = State) ->
+deregister(#{user := User, target := Target, usm := Usm, ip := Ip} = State) ->
+    _ = Ip =/= undefined andalso s2i_trap_sources:remove(Ip),
     _ = catch snmpm:unregister_agent(User, Target),
     _ = catch snmpm:unregister_user(User),
-    case Usm of
-        {E, U} -> _ = catch snmpm:unregister_usm_user(E, U);
-        undefined -> ok
-    end,
-    State#{registered := false, usm := undefined}.
+    _ = [catch snmpm:unregister_usm_user(E, U) || {E, U} <- Usm],
+    State#{registered := false, usm := [], ip := undefined}.
 
 open_secrets(#{version := v3} = Snmp) ->
     open_fields([auth_password, priv_password], Snmp);
@@ -189,14 +217,22 @@ engine_id(#{version := v3}, Ip, Port, Timeout, Retries) ->
 engine_id(_Snmp, _Ip, _Port, _Timeout, _Retries) ->
     {ok, undefined}.
 
+%% Under the agent's engine id (requests, traps) and the gateway's (informs).
+%% A leftover registration (failed earlier attempt, other device with the
+%% same user name) is replaced.
 register_usm(#{version := v3} = Snmp, EngineId) ->
-    {E, U, Conf} = s2i_snmp_conf:usm(Snmp, EngineId),
-    case snmpm:register_usm_user(E, U, Conf) of
-        ok -> {ok, {E, U}};
-        {error, R} -> {error, {usm, R}}
-    end;
+    lists:foldl(fun(Engine, {ok, Acc}) ->
+                        {E, U, Conf} = s2i_snmp_conf:usm(Snmp, Engine),
+                        _ = snmpm:unregister_usm_user(E, U),
+                        case snmpm:register_usm_user(E, U, Conf) of
+                            ok -> {ok, [{E, U} | Acc]};
+                            {error, R} -> {error, {usm, R}}
+                        end;
+                   (_, Error) ->
+                        Error
+                end, {ok, []}, lists:usort([EngineId, s2i_snmpm:local_engine_id()]));
 register_usm(_Snmp, _EngineId) ->
-    {ok, undefined}.
+    {ok, []}.
 
 %%% ===========================================================================
 %%% Poll groups
@@ -259,7 +295,7 @@ send(Kind, Oids, Attempt, Reported, #{user := User, target := Target, reqs := Re
     Result = case Kind of
                  {walk, _} when Vsn =:= v1 -> snmpm:async_get_next2(User, Target, Oids, Opts);
                  {walk, _} -> snmpm:async_get_bulk2(User, Target, 0, ?BULK, Oids, Opts);
-                 {poll, _} -> snmpm:async_get2(User, Target, Oids, Opts)
+                 _ -> snmpm:async_get2(User, Target, Oids, Opts)  % poll, once
              end,
     Req = #{kind => Kind, oids => Oids, attempt => Attempt, reported => Reported, sent_at => now_ms()},
     case Result of
@@ -289,6 +325,9 @@ resend_after_report(#{reqs := Reqs} = State) ->
 failed(#{kind := {poll, G}, oids := Oids}, Reason, State) ->
     logger:debug("SNMP poll of ~p failed: ~p", [Oids, Reason]),
     chunk_done(G, false, State);
+failed(#{kind := once, oids := Oids}, Reason, State) ->
+    logger:debug("SNMP GET of ~p failed: ~p", [Oids, Reason]),
+    State;
 failed(#{kind := {walk, R}}, Reason, State) ->
     logger:warning("SNMP walk of resolver ~ts failed: ~p", [R, Reason]),
     State#{walk := undefined, resolve := wanted}.
@@ -296,7 +335,12 @@ failed(#{kind := {walk, R}}, Reason, State) ->
 response(#{kind := {poll, G}} = Req, Resp, State) ->
     poll_response(G, Req, Resp, State);
 response(#{kind := {walk, R}} = Req, Resp, State) ->
-    walk_response(R, Req, Resp, State).
+    walk_response(R, Req, Resp, State);
+response(#{kind := once, sent_at := SentAt}, {noError, _, Vbs}, State) ->
+    apply_varbinds(Vbs, SentAt, State);
+response(#{kind := once, oids := Oids}, {Error, _, _}, State) ->
+    logger:debug("SNMP GET of ~p answered with ~p", [Oids, Error]),
+    State.
 
 %%% ===========================================================================
 %%% Poll responses
@@ -328,7 +372,12 @@ apply_values(Values, SentAt, State0) ->
                 {_, {timeticks, U}} -> uptime({U, SentAt}, State0);
                 _ -> State0
             end,
-    #{routes := #{routes := Routes}, states := States} = State,
+    #{trap_at := TrapAt} = State,
+    %% ordering rule: a request sent before the last trap of a datapoint
+    %% carries an older state than the trap
+    publish_values([V || {Oid, _} = V <- Values, s2i_trap_match:poll_applies(Oid, SentAt, TrapAt)], State).
+
+publish_values(Values, #{routes := #{routes := Routes}, states := States} = State) ->
     Ctx = #{now => now_ms(), ts => os:system_time(millisecond)},
     {Writes, States1} =
         lists:foldl(fun({Oid, V}, {Ws, Sts}) ->
@@ -365,6 +414,53 @@ chunk_done(G, Ok, #{groups := Groups} = State) ->
         _ ->
             State
     end.
+
+%%% ===========================================================================
+%%% Traps and informs
+%%% ===========================================================================
+
+trap(Info, #{rules := Rules, routes := Routes, name := Name, traps := N} = State0) ->
+    State = State0#{traps := N + 1},
+    #{trap_oid := TrapOid} = Trap = s2i_trap_match:normalize(Info),
+    {Actions, Misses} = s2i_trap_match:match(Trap, Rules, Routes),
+    [logger:debug("SNMP device ~ts: trap rule ~ts matched, but found ~p", [Name, R, Why])
+     || {R, Why} <- Misses],
+    case Actions of
+        [] ->
+            logger:debug("SNMP device ~ts: unmatched trap ~p", [Name, TrapOid]),
+            State#{unmatched := maps:get(unmatched, State) + 1};
+        _ ->
+            after_trap(Actions, trap_values([{O, V} || #{oid := O, value := V} <- Actions], State))
+    end.
+
+trap_values(Values, #{trap_at := TrapAt} = State) ->
+    Now = now_ms(),
+    publish_values(Values, State#{trap_at := maps:merge(TrapAt, #{O => Now || {O, _} <- Values})}).
+
+after_trap(Actions, #{resets := Resets0} = State) ->
+    Resets = lists:foldl(
+               fun(#{oid := O, auto_reset := #{delay := D, value := V}}, Acc) ->
+                       _ = case Acc of
+                               #{O := Old} -> erlang:cancel_timer(Old);
+                               _ -> ok
+                           end,
+                       Acc#{O => erlang:start_timer(D, self(), {auto_reset, O, V})};
+                  (_, Acc) ->
+                       Acc
+               end, Resets0, Actions),
+    Confirms = maps:groups_from_list(fun(#{confirm_get_after := D}) -> D end, fun(#{oid := O}) -> O end,
+                                     [A || #{confirm_get_after := _} = A <- Actions]),
+    maps:foreach(fun(D, Oids) -> erlang:start_timer(D, self(), {get_once, lists:usort(Oids)}) end,
+                 Confirms),
+    State#{resets := Resets}.
+
+%% A GET outside the poll schedule (trap confirmation, newly resolved
+%% instances): applied like a poll response, failures do not count for health.
+get_once(Oids, #{registered := true, routes := #{routes := Routes}, device := #{max_varbinds := Max}} = State) ->
+    Chunks = s2i_poll:chunks([O || O <- Oids, is_map_key(O, Routes)], Max),
+    lists:foldl(fun(C, S) -> send(once, C, 0, S) end, State, Chunks);
+get_once(_Oids, State) ->
+    State.
 
 %%% ===========================================================================
 %%% Health
@@ -482,8 +578,11 @@ resolved(Resolved, #{resolve := Resolve, exp := Exp, routes := Old, states := St
                           end, States, Moved),
     {Writes, States2} = s2i_sample:invalidate(Lost, States1),
     publish(Writes),
-    State1 = rebuild_groups(State#{resolved := Resolved, routes := New, states := States2,
-                                   resolve := idle}),
+    %% newly resolved datapoints are read now, not one poll interval later
+    Added = lists:usort(lists:append(maps:values(maps:get(polls, New))))
+        -- lists:append(maps:values(maps:get(polls, Old))),
+    State1 = get_once(Added, rebuild_groups(State#{resolved := Resolved, routes := New, states := States2,
+                                                   resolve := idle})),
     case Resolve of
         wanted -> start_resolve(State1);
         _ -> State1

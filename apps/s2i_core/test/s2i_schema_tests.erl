@@ -448,3 +448,56 @@ override_errors_test_() ->
                         D(#{datapoint => <<"x">>, mappings => [#{index => 0}, #{index => 0}]}))),
      ?_assert(has_error([overrides, 0, mappings, 0, type], invalid_value, device,
                         D(#{datapoint => <<"x">>, mappings => [#{index => 0, type => c_sc_na_1}]})))].
+
+%%% ---------------------------------------------------------------------------
+%%% trap rules
+%%% ---------------------------------------------------------------------------
+
+link_down_rule() ->
+    #{name => <<"link-down">>, trap_oid => <<"1.3.6.1.6.3.1.1.5.3">>,
+      datapoint => <<"if{slot}/operStatus">>,
+      instance => #{oid => <<"1.3.6.1.2.1.2.2.1.1">>, from => value},
+      set => 2}.
+
+with_rules(Rules) ->
+    (profile())#{trap_rules => Rules}.
+
+trap_rules_normalise_test() ->
+    Alarm = #{name => <<"alarm">>, trap_oid => <<".1.3.6.1.4.1.9.0.7">>, datapoint => <<"temperature">>,
+              conditions => [#{oid => <<"1.3.6.1.4.1.9.2">>, value => <<"major">>}],
+              take => <<"1.3.6.1.4.1.9.3">>,
+              auto_reset => #{delay => 60000, value => 0}, confirm_get_after => 500},
+    #{trap_rules := [#{name := <<"link-down">>, conditions := [], set := 2,
+                       instance := #{oid := <<"1.3.6.1.2.1.2.2.1.1">>, from := value}},
+                     #{trap_oid := <<"1.3.6.1.4.1.9.0.7">>,
+                       conditions := [#{op := eq, value := <<"major">>}],
+                       auto_reset := #{delay := 60000, value := 0}}]} = P =
+        ok(profile, with_rules([link_down_rule(), Alarm])),
+    %% JSON round trip and idempotence
+    ?assertEqual({ok, P}, s2i_schema:normalize(profile, json:decode(iolist_to_binary(json:encode(P))))),
+    %% instance defaults to the OID suffix
+    #{trap_rules := [#{instance := #{from := suffix}}]} =
+        ok(profile, with_rules([(link_down_rule())#{instance => #{oid => <<"1.3.6.1.2.1.2.2.1.1">>}}])),
+    #{trap_rules := []} = ok(profile, profile()).
+
+trap_rule_set_xor_take_test() ->
+    R = link_down_rule(),
+    ?assert(has_error([trap_rules, 0, take], set_and_take_exclusive, profile,
+                      with_rules([R#{take => <<"1.3.6.1.2.1.2.2.1.8">>}]))),
+    ?assert(has_error([trap_rules, 0, set], set_or_take_required, profile,
+                      with_rules([maps:remove(set, R)]))),
+    ?assert(has_error([trap_rules, 0, set], invalid_value, profile, with_rules([R#{set => 1.5}]))).
+
+trap_rule_references_test() ->
+    R = link_down_rule(),
+    ?assert(has_error([trap_rules, 0, datapoint], unknown_datapoint, profile,
+                      with_rules([R#{datapoint => <<"nope">>}]))),
+    ?assert(has_error([trap_rules, 0, instance], required_for_instance_scope, profile,
+                      with_rules([maps:remove(instance, R)]))),
+    ?assert(has_error([trap_rules, 0, instance], not_allowed_for_device_scope, profile,
+                      with_rules([R#{datapoint => <<"temperature">>}]))),
+    ?assert(has_error([trap_rules, 1, name], duplicate, profile, with_rules([R, R]))),
+    ?assert(has_error([trap_rules, 0, trap_oid], invalid_format, profile,
+                      with_rules([R#{trap_oid => <<"linkDown">>}]))),
+    ?assert(has_error([trap_rules, 0, auto_reset, delay], out_of_range, profile,
+                      with_rules([R#{auto_reset => #{delay => 10, value => 1}}]))).

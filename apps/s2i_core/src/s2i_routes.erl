@@ -12,7 +12,10 @@ Route compiler (pure): expansion + resolved indexes → runtime lookup tables.
   unresolved instance are not polled.
 - `unresolved`: datapoints whose instance key is not resolved; their mappings
   are published with quality `invalid` until resolution succeeds.
-- `slots`: `#{Index => Slot}` to map trap varbinds (e.g. ifIndex) to slots.
+- `templates`: `#{{Template, Index | device} => Oid}` for the datapoints
+  with mappings, so a trap rule finds its datapoint by template name and the
+  table index carried in the trap (e.g. ifIndex). Per template, because
+  different tables of one device have different index spaces.
 - `comm_status`: the device's comm-status point, if configured.
 
 `points/1` lists every IEC address per server (resolved or not, plus comm
@@ -31,7 +34,7 @@ status) for seeding and for adding/removing points on reconfiguration.
 -type device_routes() :: #{routes := #{oid() => [route()]},
                            polls := #{binary() => [oid()]},
                            unresolved := [s2i_expand:datapoint()],
-                           slots := #{non_neg_integer() => non_neg_integer()},
+                           templates := #{{binary(), non_neg_integer() | device} => oid()},
                            comm_status => map()}.
 
 -spec sys_uptime() -> oid().
@@ -62,8 +65,9 @@ device(#{datapoints := Dps} = Exp, Resolved) ->
                    (_, Acc) ->
                         Acc
                 end, #{}, Concrete)),
-    Slots = maps:from_list([{lists:last(Oid), Slot} || {Oid, Slot, _} <- Concrete, Slot =/= undefined]),
-    Out = #{routes => Routes, polls => Polls, unresolved => Unresolved, slots => Slots},
+    Templates = maps:from_list([{{T, case Slot of undefined -> device; _ -> lists:last(Oid) end}, Oid}
+                                || {Oid, Slot, #{template := T, mappings := [_ | _]}} <- Concrete]),
+    Out = #{routes => Routes, polls => Polls, unresolved => Unresolved, templates => Templates},
     case Exp of
         #{comm_status := Cs} -> Out#{comm_status => Cs};
         _ -> Out
