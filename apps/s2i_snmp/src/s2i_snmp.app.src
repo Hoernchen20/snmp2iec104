@@ -1,0 +1,13 @@
+{application, s2i_snmp, [
+    {description, "snmp2iec104: SNMP manager side (polling, traps)"},
+    {vsn, "0.1.0"},
+    {registered, [s2i_snmp_sup]},
+    {applications, [
+        kernel,
+        stdlib,
+        snmp,
+        s2i_core
+    ]},
+    {env, []},
+    {modules, []}
+]}.

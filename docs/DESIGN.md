@@ -55,6 +55,7 @@ access goes through `s2i_config` so the backend remains replaceable.
 
 ```
 apps/
+  snmp2iec104/ application entry point; owns the root supervisor s2i_sup
   s2i_core/   config schema, validation, Mnesia store, profile expansion,
               route compiler, value transforms, trap matching, reconcile diff
   s2i_snmp/   snmpm user, device subtrees, pollers, trap dispatch
@@ -62,6 +63,12 @@ apps/
   s2i_web/    cowboy: REST, auth, sessions, WebSocket, static React build
 frontend/     React source (not part of the release; built into s2i_web/priv)
 ```
+
+`snmp2iec104` is the only app with an application callback. The other four
+are library applications that export their subtree supervisors
+(`s2i_iec_sup:child_spec/0`, …), so the whole gateway runs under one
+`rest_for_one` root as shown in §4, while code dependencies stay one-way
+(`s2i_core` depends on none of the others).
 
 Rule of thumb: everything that can be a pure function lives in `s2i_core` and
 is written test-first with eunit/PropEr. Processes stay thin.

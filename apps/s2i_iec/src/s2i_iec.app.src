@@ -1,0 +1,13 @@
+{application, s2i_iec, [
+    {description, "snmp2iec104: IEC 60870-5-104 server side"},
+    {vsn, "0.1.0"},
+    {registered, [s2i_iec_sup]},
+    {applications, [
+        kernel,
+        stdlib,
+        iec60870,
+        s2i_core
+    ]},
+    {env, []},
+    {modules, []}
+]}.

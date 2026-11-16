@@ -1,0 +1,16 @@
+{application, snmp2iec104, [
+    {description, "SNMP to IEC 60870-5-104 gateway"},
+    {vsn, "0.1.0"},
+    {registered, [s2i_sup]},
+    {mod, {snmp2iec104_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        s2i_core,
+        s2i_iec,
+        s2i_snmp,
+        s2i_web
+    ]},
+    {env, []},
+    {modules, []}
+]}.

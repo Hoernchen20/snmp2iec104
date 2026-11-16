@@ -1,0 +1,13 @@
+{application, s2i_web, [
+    {description, "snmp2iec104: REST API, web UI, WebSocket debugging"},
+    {vsn, "0.1.0"},
+    {registered, [s2i_web_sup]},
+    {applications, [
+        kernel,
+        stdlib,
+        cowboy,
+        s2i_core
+    ]},
+    {env, []},
+    {modules, []}
+]}.

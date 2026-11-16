@@ -1,0 +1,11 @@
+{application, s2i_core, [
+    {description, "snmp2iec104: config, validation, transforms, routing"},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {applications, [
+        kernel,
+        stdlib
+    ]},
+    {env, []},
+    {modules, []}
+]}.

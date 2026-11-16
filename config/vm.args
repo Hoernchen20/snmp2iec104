@@ -1,0 +1,4 @@
+-sname snmp2iec104
+-setcookie snmp2iec104_dev
++K true
++A 30
