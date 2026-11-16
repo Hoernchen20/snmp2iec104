@@ -80,7 +80,8 @@ s2i_sup                                 rest_for_one
 ├── s2i_config          gen_server: Mnesia schema owner, staged/active config,
 │                       validate + activate, emits {config_activated, Vsn}
 ├── s2i_routes          ETS owner: compiled routing table, swapped atomically
-├── s2i_iec_sup         one_for_one
+├── s2i_iec_sup         rest_for_one
+│   ├── s2i_live        ETS owner: every configured point + current value
 │   └── s2i_iec_mgr     reconciler: desired servers ↔ running iec60870 servers
 ├── s2i_snmp_sup        rest_for_one
 │   ├── s2i_snmpm_user  snmpm user callback; traps / informs / reports →
@@ -401,23 +402,37 @@ varbind match / trap rules → same path as above (sets last_trap_at)
 - Optional per-device comm-status single point.
 - Before the first good value, a point is published as `invalid`, so general
   interrogation never reports a fabricated state.
-- erl60870 server down/restart → `s2i_iec_mgr` re-seeds all current values
-  from the live-value ETS after start.
+- erl60870 server down/restart → its data model (`s2i_iec_dm`) re-seeds all
+  current values from the live-value table (`s2i_live`) on init, whoever
+  restarts it (erl60870's supervisor or `s2i_iec_mgr`).
 
 ## 7. IEC 104 side
 
 - `s2i_iec_mgr` starts one `iec60870` server per configured `IecServer`
-  under the library's own `iec60870_instances_sup` (`iec60870:start_server/2`).
+  under the library's own `iec60870_instances_sup` (`iec60870:start_server/2`,
+  name `{s2i, Name}`), translated by `s2i_iec_config:server/1` (pure). On start
+  it stops leftover `{s2i, _}` servers, so its view is always accurate. A
+  server that fails to start (port still in use) is retried every 2 s.
+- `s2i_live` holds `{{Server, Coa, Ioa}, #{type, source}, Spec}` for every
+  configured point; new points get an invalid seed. `s2i_iec:publish/2`
+  stores a value there first (dropping values for points that are not
+  configured with that type), then calls `iec60870_server:update/2`.
+- Data model `s2i_iec_dm` = `iec60870_dm_ets` seeded from `s2i_live` on init.
 - Redundancy groups map 1:1 to erl60870 `redundancy => #{mode => multiple,
   groups => [...]}`.
-- Callback module `s2i_iec_callback` (`iec60870_server` behaviour): rejects
-  all commands in v1, accepts clock sync without setting the system clock,
-  reports connection events to `s2i_debug`.
+- Callback module `s2i_iec_callback` (`iec60870_server` behaviour): only
+  `connection_event/2` (logged; debug topics in phase 7). Without
+  `select/execute`, erl60870 rejects all commands; without `clock_sync/3`
+  it confirms clock sync without touching the system clock.
 - Optional background scan: `s2i_iec_mgr` timer re-sends all values with
   `cot => background`.
-- On config change: points added → `update/2`; points removed →
-  `remove/2` (**upstream change, see §11**); server-level change (port, COA,
-  redundancy, TLS) → server restart.
+- On config change (`s2i_reconcile:servers/2`, `points/2`, pure): all stops
+  first, then `s2i_live` is updated, then starts; on servers that keep
+  running, points removed → `remove/2` (**upstream, see §11**), points added
+  → `update/2` with the invalid seed (spontaneous). A point whose type or
+  source changed is removed and added again. Server-level change (anything in
+  `s2i_iec_config:server/1`: transport, COAs, params, redundancy) → restart;
+  `background_scan` and `description` do not restart.
 
 ## 8. SNMP side
 
@@ -489,7 +504,8 @@ Ring buffers in `s2i_debug` give a new subscriber the recent history.
 
 - **Point removal:** `iec60870_server:remove(Server, [{Coa, Ioa}])`, new
   optional data-model callback `delete/3` (implemented in `iec60870_dm_ets`),
-  so removed IOAs no longer answer interrogation.
+  so removed IOAs no longer answer interrogation. Released in erl60870
+  v0.2.0, which this project depends on.
 
 ## 12. Implementation phases
 

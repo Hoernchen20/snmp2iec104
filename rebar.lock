@@ -3,7 +3,7 @@
  {<<"cowlib">>,{pkg,<<"cowlib">>,<<"2.13.0">>},1},
  {<<"iec60870">>,
   {git_subdir,"https://github.com/Hoernchen20/erl60870.git",
-              {ref,"10a8ed3680da91ba973f8f037d6b6e3bddcd695a"},
+              {ref,"ee2c9782c329fb4f3898043e36a0c04b89c6e9a2"},
               "apps/iec60870"},
   0},
  {<<"ranch">>,{pkg,<<"ranch">>,<<"2.2.0">>},0}]}.

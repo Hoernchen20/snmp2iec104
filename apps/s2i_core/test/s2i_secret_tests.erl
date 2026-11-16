@@ -4,9 +4,12 @@
 
 %%% fixtures
 
+%% A fresh, empty directory per test: unique_integer restarts with every VM,
+%% so earlier runs may have left (read-only) key files behind.
 tmp_dir() ->
     Dir = filename:join([os:getenv("TMPDIR", "/tmp"), "s2i_secret_tests",
                          integer_to_list(erlang:unique_integer([positive]))]),
+    _ = file:del_dir_r(Dir),
     ok = filelib:ensure_path(Dir),
     Dir.
 
