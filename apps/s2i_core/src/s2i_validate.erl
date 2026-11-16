@@ -11,16 +11,16 @@ Validation of a whole configuration:
 - `entities/1` normalises every entity (`s2i_schema`) and checks that each map
   key equals the entity's `name`. Dangling references are allowed; this is
   what the staged configuration must satisfy.
-- `config/1` additionally checks references between entities and listener
-  port conflicts; this is what an activated configuration must satisfy.
+- `config/1` additionally checks references between entities, listener
+  port conflicts and, if those pass, the expansion (`s2i_expand:config/1`:
+  overrides, IOA collisions and ranges); this is what an activated
+  configuration must satisfy.
 
 Errors use the `s2i_schema` format, with paths prefixed by section and name,
 e.g. `[devices, <<"sw-a">>, targets, <<"default">>, 0, coa]`. If any entity
 fails its schema, only schema errors are returned (reference checks on broken
 entities would just add noise).
 
-IOA collisions need the expanded datapoints and are checked by the profile
-expansion (phase 2).
 """.
 
 -export([config/1, entities/1, empty/0, sections/0]).
@@ -44,8 +44,13 @@ config(Input) ->
     case entities(Input) of
         {ok, Config} ->
             case references(Config) ++ port_conflicts(Config) of
-                [] -> {ok, Config};
-                Errors -> {error, [#{path => P, error => E} || {P, E} <- Errors]}
+                [] ->
+                    case s2i_expand:config(Config) of
+                        {ok, _} -> {ok, Config};
+                        Error -> Error
+                    end;
+                Errors ->
+                    {error, [#{path => P, error => E} || {P, E} <- Errors]}
             end;
         Error ->
             Error

@@ -20,12 +20,12 @@ Errors are collected, not short-circuited: every problem is reported as
 Cross-entity checks (references, port conflicts) live in `s2i_validate`.
 """.
 
--export([normalize/2, kinds/0, iec_types/0]).
+-export([normalize/2, kinds/0, iec_types/0, mapping_errors/1]).
 -export_type([kind/0, path/0, error/0]).
 
 -type kind() :: server | device | profile.
 -type path() :: [atom() | binary() | non_neg_integer()].
--type error() :: #{path := path(), error := atom()}.
+-type error() :: #{path := path(), error := atom(), detail => map()}.
 
 -define(NAME_RE, "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$").
 -define(DP_NAME_RE, "^[A-Za-z0-9][A-Za-z0-9_./-]{0,127}$").
@@ -55,6 +55,10 @@ normalize(Kind, Input) ->
         undefined -> {error, [#{path => [], error => unknown_kind}]};
         Spec -> norm(Spec, Input, [])
     end.
+
+-doc "Consistency errors of a canonical mapping (type/transform/deadband).".
+-spec mapping_errors(map()) -> [{path(), atom()}].
+mapping_errors(Mapping) -> check_mapping(Mapping).
 
 %%% ===========================================================================
 %%% Entity specs
@@ -100,7 +104,8 @@ spec(device) ->
       {instances, {list, instance(), #{unique_by => [slot, index, key]}}, {default, []}},
       {targets, {map_of, name, {list, target(), #{min => 1, unique => true}}, #{}},
        {default, #{}}},
-      {comm_status, comm_status(), optional}],
+      {comm_status, comm_status(), optional},
+      {overrides, {list, override(), #{}}, {default, []}}],
      []};
 spec(profile) ->
     {object,
@@ -171,6 +176,26 @@ instance() ->
 
 target() ->
     {object, [{server, name, required}, {coa, {int, 1, 65534}, required}], []}.
+
+%% Per-device changes to the profile's datapoints. References to the
+%% profile (datapoint, slots, mapping index) and the consistency of a patched
+%% mapping are checked by s2i_expand.
+override() ->
+    {object,
+     [{datapoint, dp_name, required},
+      {slots, {list, {int, 0, 65535}, #{min => 1, unique => true}}, optional},
+      {enabled, boolean, {default, true}},
+      {mappings, {list, mapping_patch(), #{unique_by => [index]}}, {default, []}}],
+     []}.
+
+mapping_patch() ->
+    {object,
+     [{index, {int, 0, 1000}, required},
+      {enabled, boolean, {default, true}},
+      {type, {enum, iec_types()}, optional},
+      {transform, transform(), optional},
+      {deadband, deadband(), optional}],
+     []}.
 
 comm_status() ->
     {object,

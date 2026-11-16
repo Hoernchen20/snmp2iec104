@@ -123,8 +123,8 @@ matches), `background_scan` interval (optional).
 **Device** — `name`, `host`, `port`, `snmp` (version + community, or USM
 user/sec level/auth/priv + engine id), `timeout`, `retries`, `max_varbinds`,
 `down_after`, `enabled`, `profile`, `ioa_base`, `instances`, `targets`,
-`comm_status` (optional single point "device reachable"); per-device
-overrides follow in phase 2.
+`comm_status` (optional single point "device reachable"), `overrides`
+(§5.2).
 
 **Profile** — reusable description of a device type:
 - `poll_groups`: e.g. `#{status => 30000, counters => 60000}`
@@ -181,10 +181,28 @@ IOA = device.ioa_base + instance.slot * profile.ioa_stride + template.ioa_offset
 Example: `ioa_base = 10000`, `ioa_stride = 10`; interface slot 3, operStatus
 offset 1 → IOA 10031. Temperature (device-level, offset 0) → 10000.
 
-`s2i_profile:expand(Device, Profile) -> {ok, [Datapoint], [Mapping]}` is pure.
-Per-device overrides can disable a datapoint or change a single mapping.
-Datapoint names are stable and human-readable: `core-sw1/if3/operStatus`,
-`core-sw1/temperature`.
+`s2i_expand:device(Device, Profile) -> {ok, Expansion}` is pure; each datapoint
+carries its concrete OID (static index substituted) or `{key, Prefix,
+{Resolver, Value}}` for runtime resolution, plus one mapping per target
+binding. Datapoint ids are stable and human-readable:
+`core-sw1/if3/operStatus`, `core-sw1/temperature`.
+
+**Overrides** (per device) address a datapoint template by name, optionally
+limited to some slots:
+
+```erlang
+overrides => [#{datapoint => <<"if{slot}/inOctets">>, enabled => false},
+              #{datapoint => <<"if{slot}/operStatus">>, slots => [24],
+                mappings => [#{index => 0, type => m_dp_tb_1,
+                               transform => #{kind => enum, map => #{...}}}]}]
+```
+
+A mapping patch (by position in the template) may disable the mapping or
+replace `type`, `transform`, `deadband`; the merged mapping is checked like a
+profile mapping. Unknown datapoints, slots or mapping indexes, `slots` on a
+device-scope datapoint and two overrides covering the same datapoint/slot are
+errors. Disabled devices keep their IEC addresses (they still count for
+collisions).
 
 ### 5.3 Instance resolution (unstable table indexes)
 
@@ -206,8 +224,9 @@ Therefore:
 - Static `index` remains available for devices with guaranteed persistence
   (e.g. ifIndex persistence enabled) or tables without a usable name column.
 
-`s2i_resolve:build(ResolverColumns, WalkResult) -> #{Key => Index}` and the
-"did it change" comparison are pure and tested first.
+`s2i_resolve:build(Column, Rows) -> {#{Value => Index}, Ambiguous}` (a value
+in several rows is ambiguous and left unresolved), `keys/1` (what a device
+needs) and `changed/3` (which of the device's keys moved) are pure.
 
 ### 5.4 Datapoint sources: poll + trap
 
@@ -255,9 +274,15 @@ Example: ifOperStatus `#{kind => enum, map => #{<<"1">> => true, <<"2">> => fals
 quality `invalid`. Transform parameters and the type compatibility above are
 checked by the schema (phase 1); applying them is `s2i_transform` (phase 2).
 
-`s2i_transform:apply(Transform, SnmpValue, PrevState) -> {ok, IecSpec, State}
-| skip` is pure and property-tested (wrap handling, scaling bounds, overflow →
-`overflow` quality).
+`s2i_transform` is pure and property-tested, in three steps:
+`convert(Transform, SnmpValue, NowMs, State)` → engineering value (or
+`skip` / `{invalid, Reason}`; `rate` keeps the last sample, wrap-aware for
+Counter32/64), `deadband(Deadband, New, LastSent)`, and `encode(Type, Eng)` →
+erl60870 point fields. Encoding details: normalized values as signed 16-bit
+fractions, scaled values rounded, floats as float32; out-of-range values are
+clamped with quality `overflow`. Integrated totals are reported modulo 2^31
+(BCR is signed 32-bit). `bit` on an OCTET STRING follows SNMP BITS order
+(bit 0 = MSB of the first octet).
 
 Deadband (absolute / percent) is applied in the gateway before
 `iec60870_server:update/2`; erl60870's own change gate still suppresses
@@ -279,8 +304,11 @@ Three levels, all pure and returning *all* errors (for the UI), each as
    COA, resolver and target-label references; comm-status IOA within the
    server's `ioa_size`; listener port conflicts (same port on the same or a
    wildcard address).
-3. **Expansion** (phase 2, on activate): `(server, coa, ioa)` unique across
-   all expanded mappings; IOAs within `ioa_size`.
+3. **Expansion** (`s2i_expand:config/1`, part of `s2i_validate:config/1`):
+   overrides, `(server, coa, ioa)` unique across all expanded mappings and
+   comm-status points (`ioa_collision`, reported on the later device by name
+   with `detail => #{server, coa, ioa, with => EarlierPath}`); IOAs within
+   `1..2^(8·ioa_size)-1` (`out_of_range`).
 
 The canonical form produced by the schema is JSON-safe: atom keys and enums,
 binary strings, absent optionals. JSON input (binary keys and values, `null`)
@@ -344,6 +372,8 @@ s2i_poller ── GET (chunked by max_varbinds) ──► snmpm ──► device
     │  varbinds, request sent_at, received_at
     ▼
 s2i_routes  ETS {DeviceId, Oid} → [Route]        (lookup in caller, no hub process)
+            compiled by s2i_routes:device(Expansion, Resolved): routes, poll
+            groups (+ sysUpTime.0), unresolved datapoints, index → slot
     ▼
 ordering check (sent_at > last_trap_at) → transform → deadband
     ▼

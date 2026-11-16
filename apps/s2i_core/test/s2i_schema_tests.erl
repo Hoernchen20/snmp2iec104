@@ -412,3 +412,39 @@ malformed_sealed_secret_test_() ->
                         (device())#{snmp => #{version => v2c, community => Bad}}))
      || Bad <- [<<"enc:v1:">>, <<"enc:v1:xyz">>, <<"enc:v1:0011aabb:">>,
                 <<"enc:v1:0011aabb:!!">>, <<"enc:v9:0011aabb:AAAA">>]].
+
+%%% device overrides (phase 2)
+
+overrides_default_to_empty_test() ->
+    #{overrides := []} = ok(device, device()).
+
+override_canonical_form_test() ->
+    #{overrides := [#{datapoint := <<"if{slot}/operStatus">>, slots := [1, 3],
+                      enabled := true,
+                      mappings := [#{index := 0, enabled := false}]}]} =
+        ok(device, (device())#{overrides =>
+                                   [#{<<"datapoint">> => <<"if{slot}/operStatus">>,
+                                      <<"slots">> => [1, 3],
+                                      <<"mappings">> => [#{<<"index">> => 0,
+                                                           <<"enabled">> => false}]}]}).
+
+override_mapping_patch_test() ->
+    Patch = #{index => 1, type => m_me_tf_1,
+              transform => #{kind => linear, scale => 0.1},
+              deadband => #{kind => percent, value => 5}},
+    #{overrides := [#{mappings := [#{transform := #{scale := 0.1, offset := 0},
+                                     enabled := true}]}]} =
+        ok(device, (device())#{overrides => [#{datapoint => <<"temperature">>,
+                                               mappings => [Patch]}]}).
+
+override_errors_test_() ->
+    D = fun(O) -> (device())#{overrides => [O]} end,
+    [?_assert(has_error([overrides, 0, datapoint], required, device, D(#{enabled => false}))),
+     ?_assert(has_error([overrides, 0, slots], too_short, device,
+                        D(#{datapoint => <<"x">>, slots => []}))),
+     ?_assert(has_error([overrides, 0, slots, 1], duplicate, device,
+                        D(#{datapoint => <<"x">>, slots => [1, 1]}))),
+     ?_assert(has_error([overrides, 0, mappings, 1, index], duplicate, device,
+                        D(#{datapoint => <<"x">>, mappings => [#{index => 0}, #{index => 0}]}))),
+     ?_assert(has_error([overrides, 0, mappings, 0, type], invalid_value, device,
+                        D(#{datapoint => <<"x">>, mappings => [#{index => 0, type => c_sc_na_1}]})))].

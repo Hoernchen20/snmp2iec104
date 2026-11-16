@@ -3,7 +3,7 @@
 Gateway from SNMP (v1/v2c/v3, polling and traps) to IEC 60870-5-104, built on
 Erlang/OTP and [erl60870](https://github.com/Hoernchen20/erl60870).
 
-> **Status:** phase 1, configuration core (schema, validation, Mnesia store, versions). See [docs/DESIGN.md](docs/DESIGN.md)
+> **Status:** phase 2, profile expansion, instance resolution, transforms and route compiler (pure core). See [docs/DESIGN.md](docs/DESIGN.md)
 > for the architecture and the implementation phases.
 
 ## Layout
