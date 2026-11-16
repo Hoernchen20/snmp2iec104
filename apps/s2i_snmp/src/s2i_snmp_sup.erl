@@ -1,5 +1,10 @@
 -module(s2i_snmp_sup).
--moduledoc "Root of the SNMP side; will host s2i_snmpm_user and s2i_devices_sup (phase 4).".
+-moduledoc """
+Root of the SNMP side (`rest_for_one`): the snmpm manager, then the device
+processes, then their reconciler. A manager restart restarts every device
+(their registrations are gone); a restart of the devices supervisor restarts
+the reconciler, which starts the devices again.
+""".
 -behaviour(supervisor).
 
 -export([start_link/0, child_spec/0]).
@@ -15,4 +20,5 @@ child_spec() ->
 
 -spec init([]) -> {ok, {supervisor:sup_flags(), [supervisor:child_spec()]}}.
 init([]) ->
-    {ok, {#{strategy => rest_for_one, intensity => 5, period => 10}, []}}.
+    {ok, {#{strategy => rest_for_one, intensity => 5, period => 10},
+          [s2i_snmpm:child_spec(), s2i_devices_sup:child_spec(), s2i_snmp_mgr:child_spec()]}}.

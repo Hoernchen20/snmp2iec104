@@ -16,6 +16,7 @@ rejection. A real IEC 104 client (s2i_iec104_client) talks to the servers.
          publish_reaches_client/1,
          publish_to_unconfigured_point_is_dropped/1,
          publish_to_unknown_server_is_harmless/1,
+         invalidate_keeps_last_value/1,
          removing_device_removes_points_without_restart/1,
          adding_device_sends_invalid_points/1,
          server_change_restarts_server/1,
@@ -34,7 +35,7 @@ suite() -> [{timetrap, {seconds, 60}}].
 
 all() ->
     [points_start_invalid, publish_reaches_client, publish_to_unconfigured_point_is_dropped,
-     publish_to_unknown_server_is_harmless,
+     publish_to_unknown_server_is_harmless, invalidate_keeps_last_value,
      removing_device_removes_points_without_restart, adding_device_sends_invalid_points,
      server_change_restarts_server, removed_server_is_stopped, library_crash_keeps_values,
      manager_crash_keeps_values, background_scan, commands_are_rejected, redundancy_groups,
@@ -156,6 +157,17 @@ publish_to_unconfigured_point_is_dropped(Config) ->
 
 publish_to_unknown_server_is_harmless(_Config) ->
     ok = s2i_iec:publish(<<"nope">>, [{{1, 101}, #{type => m_sp_tb_1, value => true}}]).
+
+invalidate_keeps_last_value(Config) ->
+    S = connect(Config),
+    ok = s2i_iec:publish(<<"scada1">>, [{{1, 100}, #{type => m_me_tf_1, value => 41.5, ts => 1000}}]),
+    [_] = recv_objects(S, 1),
+    ok = s2i_iec:invalidate(<<"scada1">>, [{1, 100}, {1, 999}]),
+    [#object{ioa = 100, value = 41.5, quality = [invalid]}] = recv_objects(S, 1),
+    %% time-tagged: the time of the invalidation, not of the last value
+    {ok, #{ts := Ts}} = s2i_live:get(<<"scada1">>, {1, 100}),
+    ?assert(Ts > 1000),
+    {100, 41.5, [invalid]} = lists:keyfind(100, 1, ?C:gi(S, 1)).
 
 removing_device_removes_points_without_restart(Config) ->
     S = connect(Config),

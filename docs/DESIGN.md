@@ -1,7 +1,8 @@
 # snmp2iec104 — Design
 
-Status: **draft, pre-implementation.** Scope of v1: monitoring direction only,
-SNMP → IEC 60870-5-104.
+Status: **phases 0–4 implemented** (config, expansion, IEC side, SNMP
+polling); traps, REST and UI follow (§12). Scope of v1: monitoring direction
+only, SNMP → IEC 60870-5-104.
 
 ## 1. Scope and goals
 
@@ -84,19 +85,23 @@ s2i_sup                                 rest_for_one
 │   ├── s2i_live        ETS owner: every configured point + current value
 │   └── s2i_iec_mgr     reconciler: desired servers ↔ running iec60870 servers
 ├── s2i_snmp_sup        rest_for_one
-│   ├── s2i_snmpm_user  snmpm user callback; traps / informs / reports →
-│   │                   owning s2i_device (lookup by IP, not {IP, Port})
-│   └── s2i_devices_sup DynamicSupervisor
-│       └── s2i_device_sup          one per device, one_for_all
-│           ├── s2i_device          gen_statem: agent/USM registration,
-│           │                       health (up | degraded | down), trap intake
-│           └── s2i_poller × N      one per poll group, drift-free schedule
+│   ├── snmpm           OTP SNMP manager (snmpm_supervisor, via s2i_snmpm);
+│   │                   default user s2i_snmpm_user (callback module)
+│   ├── s2i_devices_sup one_for_one, one child per device
+│   │   └── s2i_device  gen_server: agent/USM registration, instance
+│   │                   resolution, poll groups (drift-free schedule),
+│   │                   health (up | degraded | down), trap intake (phase 5)
+│   └── s2i_snmp_mgr    reconciler: desired devices ↔ running s2i_device
 ├── s2i_debug           ring buffers (trap log, SNMP trace, events), pg topics
 └── s2i_web_sup         cowboy listener(s), session table
 ```
 
-- **One subtree per device**: a hanging or crashing device is isolated; a
-  config change restarts only affected devices.
+- **One process per device**: a hanging or crashing device is isolated; a
+  config change restarts only affected devices. Each device registers its
+  own snmpm user (user data = its pid), so responses, errors and reports of
+  its requests arrive at that process directly; the poll groups are timers
+  inside it, not separate processes (no routing of responses between
+  processes, one consistent state per device).
 - **Reconciler pattern** on both sides: `s2i_reconcile:diff(Desired, Running)
   -> [start | stop | restart]` is pure and tested first; managers only execute
   the actions.
@@ -369,17 +374,20 @@ activation and held in `s2i_routes`.
 ## 6. Runtime data flow
 
 ```
-s2i_poller ── GET (chunked by max_varbinds) ──► snmpm ──► device
-    │  varbinds, request sent_at, received_at
+s2i_device ── GET (chunked by max_varbinds) ──► snmpm ──► device
+    │  varbinds, request sent_at, received_at (s2i_poll: chunks, schedule,
+    │  reboot detection, varbind → value)
     ▼
 s2i_routes  ETS {DeviceId, Oid} → [Route]        (lookup in caller, no hub process)
             compiled by s2i_routes:device(Expansion, Resolved): routes, poll
             groups (+ sysUpTime.0), unresolved datapoints, index → slot
     ▼
-ordering check (sent_at > last_trap_at) → transform → deadband
+ordering check (sent_at > last_trap_at, phase 5) → s2i_sample (pure):
+transform → only changes / deadband → encode
     ▼
-group by server → iec60870_server:update(Server, Writes)   (cast, batched)
-    └─► live-value ETS + pg debug topic (only if subscribed)
+group by server → s2i_iec:publish/2 | s2i_iec:invalidate/2
+    └─► s2i_live + iec60870_server:update (cast, batched)
+        + pg debug topic (only if subscribed, phase 7)
 
 s2i_snmpm_user ── trap/inform ──► s2i_device (by source IP)
     ▼
@@ -388,18 +396,27 @@ varbind match / trap rules → same path as above (sets last_trap_at)
 
 - Timestamps: CP56Time2a from `received_at` (poll) or trap reception time;
   mappings default to the time-tagged types (`*_TB_1`, `*_TF_1`).
-- One request in flight per poller; an overrun (previous cycle still running)
-  is counted and the tick skipped.
-- `snmpm` async API (`async_get2/4`), results via `handle_pdu/4` callback
-  routed back to the requesting poller.
+- One cycle in flight per poll group; an overrun (previous cycle still
+  running, or slots missed) is counted and the tick skipped.
+- `snmpm` async API (`async_get2/4`, walks with `async_get_bulk2/6` or
+  `async_get_next2/4` on v1). snmpm neither retries nor reports the timeout
+  of an async request, so `s2i_device` runs a timer per request and resends
+  up to `retries` times. SNMPv1 `noSuchName` fails the whole PDU: the missing
+  OID is marked and the rest asked again in the same cycle.
+- A value is sent only when it changed (deadband against the last *sent*
+  value for measurements); after `invalid` or `down`, the next good value is
+  sent even if unchanged.
 
 ### 6.1 Quality and communication status
 
-- Device health: N consecutive poll failures (configurable, default 3) →
-  `down`. On `down`, every mapping of that device is re-sent with last value
-  and quality `[invalid]` (or `[not_topical]`, configurable). Recovery on the
-  next successful poll.
-- Optional per-device comm-status single point.
+- Device health: N consecutive failed poll cycles (`down_after`, default 3)
+  → `down`. On `down`, every mapping of that device is re-sent with last value
+  and quality `[invalid]` (`s2i_iec:invalidate/2`; `not_topical` as an
+  option is left for later). Recovery on the next successful cycle, which
+  also resolves the instances again. Between 1 and N-1 failures the device
+  is `degraded` and its values stay as they are.
+- Optional per-device comm-status single point: `true` when up, `false` when
+  down (good quality in both cases), invalid before the first contact.
 - Before the first good value, a point is published as `invalid`, so general
   interrogation never reports a fabricated state.
 - erl60870 server down/restart → its data model (`s2i_iec_dm`) re-seeds all
@@ -436,18 +453,43 @@ varbind match / trap rules → same path as above (sets last_trap_at)
 
 ## 8. SNMP side
 
-- `snmpm` started by `s2i_snmp_sup` with a generated minimal `manager.conf`
-  (engine id, port, address) in the release's data dir; agents and USM users
-  are registered at runtime from config (`snmpm:register_agent/3`,
-  `register_usm_user/3`).
-- Trap port 162 requires `CAP_NET_BIND_SERVICE` or a port redirect;
-  configurable.
+- `snmpm` started by `s2i_snmp_sup` (`s2i_snmpm`) with a generated minimal
+  `manager.conf` (engine id, port, address) in the release's data dir; agents
+  and USM users are registered at runtime from config
+  (`snmpm:register_agent/3`, `register_usm_user/3`, keys localized per
+  engine id by `s2i_snmp_conf`). The gateway's engine id is configurable
+  (`s2i_snmp` `engine_id`) or generated once into `data/snmp/engine_id`.
+- One UDP socket for requests and traps; port 162 requires
+  `CAP_NET_BIND_SERVICE` or a port redirect; configurable. If the port cannot
+  be bound, start-up fails with one clear log message.
+- SNMPv3 without a configured `engine_id`: discovered by `s2i_snmp_discover`
+  (RFC 3414 §4 probe from a separate socket); snmpm has no discovery.
+- IPv4 only for now (snmpm transport `transportDomainUdpIpv4`).
 - Traps arriving from an unregistered `{IP, Port}` (common: different source
   port) land in `handle_agent/5`; `s2i_snmpm_user` resolves the device by IP.
 - SNMPv3 traps: the device's engine id must be configured (it is the
   authoritative engine for traps); informs use the gateway's engine id.
-- **Spike first (phase 4a):** confirm these three snmpm behaviours with
-  `snmpa` in common_test before building on them.
+- **Spike (phase 4a), `s2i_snmpm_spike_SUITE` against `snmpa`:** confirmed
+  the behaviours above, plus what the implementation relies on:
+  - `snmpm:start_link/1` returns `ok`, not `{ok, Pid}`: the gateway
+    supervises `snmpm_supervisor:start_link(normal, Opts)` directly.
+  - `engine_id` is mandatory in `register_agent/3`, also for v1/v2c
+    (placeholder).
+  - `update_agent_info/4` on `taddress` leaves snmpm's address index stale
+    (traps from the old address still match): an address change is
+    unregister + register, i.e. a device restart.
+  - Unanswered async requests are dropped silently (no `handle_error`).
+  - v3: the first request to an agent (and the first after its reboot) gets
+    a `usmStatsNotInTimeWindows` report via `handle_report/3`, without the
+    request id, and snmpm does not resend; the next request works. The
+    device resends its outstanding requests once on a report.
+  - v3 traps need the USM user under the agent's engine id; informs under the
+    gateway's engine id (the agent's first inform hits a time-window report,
+    its retransmission is accepted, so duplicates are possible).
+  - A v3 agent with an unknown engine id fails fast with
+    `unknownSecurityName`.
+  - `snmpm_conf` writes the engine id unescaped (`"~s"`), so `s2i_snmpm`
+    writes `manager.conf` itself.
 
 ## 9. Web: REST, auth, WebSocket
 
@@ -489,9 +531,9 @@ Ring buffers in `s2i_debug` give a new subscriber the recent history.
 
 | Layer | Tests |
 |---|---|
-| `s2i_transform`, `s2i_profile` (expand), `s2i_validate`, `s2i_route` (compile), `s2i_trap_match`, `s2i_reconcile` (diff), ordering rule | eunit + PropEr, written before the code |
+| `s2i_transform`, `s2i_expand`, `s2i_validate`, `s2i_routes`, `s2i_resolve`, `s2i_reconcile`, `s2i_sample`, `s2i_poll`, `s2i_snmp_conf`, `s2i_trap_match`, ordering rule | eunit + PropEr, written before the code |
 | `s2i_config` + Mnesia | common_test, fresh schema per suite |
-| SNMP | common_test with OTP `snmpa` as simulated agent (v1/v2c/v3, test MIB, traps sent from the suite) |
+| SNMP | common_test: OTP `snmpa` (v3, spike, traps) and a scripted v1/v2c agent (`s2i_fake_agent`: values, tables, silence, reboots) |
 | IEC | common_test with a minimal test master (APCI + `iec60870_asdu` codec: STARTDT, GI, receive spontaneous) |
 | End to end | `snmpa` → gateway → test master, incl. linkDown race and device-down quality |
 | REST / WS | `httpc` + `gun` |
@@ -515,7 +557,8 @@ Ring buffers in `s2i_debug` give a new subscriber the recent history.
 2. Profile expansion + IOA collision check, overrides, instance resolution,
    transforms, route compiler (pure)
 3. IEC side: reconciler, callback, quality seeding (+ upstream `remove/2`)
-4. SNMP polling: 4a snmpm spike, 4b v1/v2c, 4c v3/USM, device health
+4. SNMP polling: 4a snmpm spike, 4b v1/v2c, 4c v3/USM (incl. engine id
+   discovery), device health
 5. Traps/informs: varbind match, trap rules, ordering rule, confirm-GET
 6. REST API + auth
 7. React UI + WebSocket debugging
@@ -545,6 +588,7 @@ configuration.
 | 10 | Unstable table indexes | runtime instance resolution by name column (ifName default), re-resolved on start / reconnect / reboot |
 | 11 | Routing in profiles | target labels in profile mappings, bound to servers per device |
 | 12 | Secrets at rest | AES-256-GCM envelopes, key from a 0600 key file (not env) |
+| 13 | Poll groups | timers inside the one `s2i_device` process per device (own snmpm user each), not one process per group |
 
 ## 15. Open points and planned extensions
 

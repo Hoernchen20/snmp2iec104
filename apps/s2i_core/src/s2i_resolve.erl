@@ -12,7 +12,7 @@ indexes are ignored).
 by `index/2` and `s2i_routes:device/2`.
 """.
 
--export([build/2, index/2, keys/1, changed/3]).
+-export([build/2, index/2, keys/1, columns/2, changed/3]).
 -export_type([resolved/0]).
 
 -type oid() :: [non_neg_integer()].
@@ -56,6 +56,14 @@ keys(#{instances := Instances}) ->
                    (_, Acc) ->
                         Acc
                 end, #{}, Instances).
+
+-doc "Resolver columns (OIDs) a device needs: `#{Resolver => Column}`.".
+-spec columns(map(), map()) -> #{binary() => oid()}.
+columns(Device, #{resolvers := Resolvers}) ->
+    maps:map(fun(R, _Values) ->
+                     #{column := Column} = maps:get(R, Resolvers),
+                     [binary_to_integer(X) || X <- binary:split(Column, <<".">>, [global])]
+             end, keys(Device)).
 
 -doc "Keys whose index differs between two resolutions (only keys in `Keys` count).".
 -spec changed(#{binary() => [binary()]}, resolved(), resolved()) -> [key()].

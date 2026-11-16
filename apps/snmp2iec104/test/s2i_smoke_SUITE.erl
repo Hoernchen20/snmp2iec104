@@ -24,6 +24,13 @@ init_per_suite(Config) ->
     ok = application:load(s2i_core),
     ok = application:set_env(s2i_core, secret_key_file,
                              filename:join([?config(priv_dir, Config), "etc", "secret.key"])),
+    ok = application:load(s2i_snmp),
+    ok = application:set_env(s2i_snmp, dir, filename:join([?config(priv_dir, Config), "data", "snmp"])),
+    ok = application:set_env(s2i_snmp, ip, "127.0.0.1"),
+    {ok, Sock} = gen_udp:open(0, [{ip, {127, 0, 0, 1}}]),
+    {ok, Port} = inet:port(Sock),
+    ok = gen_udp:close(Sock),
+    ok = application:set_env(s2i_snmp, port, Port),
     {ok, Started} = application:ensure_all_started(snmp2iec104),
     [{started, Started} | Config].
 

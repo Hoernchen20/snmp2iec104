@@ -50,3 +50,12 @@ changed_keys_test() ->
     ?assertEqual([], s2i_resolve:changed(Keys, Old, Old)),
     ?assertEqual([{<<"if_name">>, <<"a">>}, {<<"if_name">>, <<"b">>}],
                  s2i_resolve:changed(Keys, Old, #{})).
+
+columns_of_the_resolvers_a_device_needs_test() ->
+    Device = #{instances => [#{slot => 1, key => #{resolver => <<"if_name">>, value => <<"Gi1">>}},
+                             #{slot => 2, index => 7}]},
+    Profile = #{resolvers => #{<<"if_name">> => #{column => <<"1.3.6.1.2.1.31.1.1.1.1">>},
+                               <<"unused">> => #{column => <<"1.3.6.1.2.1.2.2.1.2">>}}},
+    ?assertEqual(#{<<"if_name">> => [1, 3, 6, 1, 2, 1, 31, 1, 1, 1, 1]},
+                 s2i_resolve:columns(Device, Profile)),
+    ?assertEqual(#{}, s2i_resolve:columns(#{instances => []}, Profile)).
