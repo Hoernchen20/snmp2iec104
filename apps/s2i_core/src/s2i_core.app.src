@@ -1,11 +1,16 @@
 {application, s2i_core, [
     {description, "snmp2iec104: config, validation, transforms, routing"},
     {vsn, "0.1.0"},
-    {registered, []},
+    {registered, [s2i_config]},
     {applications, [
         kernel,
-        stdlib
+        stdlib,
+        mnesia,
+        crypto
     ]},
-    {env, []},
+    {env, [
+        %% base64 AES-256 key for stored SNMP secrets, created if missing
+        {secret_key_file, "etc/secret.key"}
+    ]},
     {modules, []}
 ]}.

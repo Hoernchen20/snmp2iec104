@@ -18,6 +18,7 @@ start_link() ->
 -spec init([]) -> {ok, {supervisor:sup_flags(), [supervisor:child_spec()]}}.
 init([]) ->
     Children = [
+        s2i_config:child_spec(),
         s2i_iec_sup:child_spec(),
         s2i_snmp_sup:child_spec(),
         s2i_web_sup:child_spec()

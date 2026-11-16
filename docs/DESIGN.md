@@ -120,19 +120,35 @@ Datapoint ─< Mapping >─ IecServer ─< RedundancyGroup
 `params` (k, w, t1–t3, field widths), `redundancy` (mode + groups with IP
 matches), `background_scan` interval (optional).
 
-**Device** — `name`, `host`, `port`, SNMP `version`, credentials (community or
-USM user/auth/priv + engine id), `timeout`, `retries`, `max_varbinds`,
-`profile`, `ioa_base`, `instances`, per-device overrides, `comm_status`
-mapping (optional single point "device reachable").
+**Device** — `name`, `host`, `port`, `snmp` (version + community, or USM
+user/sec level/auth/priv + engine id), `timeout`, `retries`, `max_varbinds`,
+`down_after`, `enabled`, `profile`, `ioa_base`, `instances`, `targets`,
+`comm_status` (optional single point "device reachable"); per-device
+overrides follow in phase 2.
 
 **Profile** — reusable description of a device type:
 - `poll_groups`: e.g. `#{status => 30000, counters => 60000}`
-- `datapoint_templates`: `name` template, `oid` template, `poll_group`,
-  `per_instance :: boolean()`
-- `mapping_templates`: per datapoint template, a list of
-  `#{server, coa, ioa_offset, type, transform, deadband}`
-- `trap_rules`: see 5.3
+- `resolvers`: see below
+- `datapoints`: `name` template, `oid` template, `scope` (`device` |
+  `instance`), optional `poll_group`, and `mappings`: a list of
+  `#{target, ioa_offset, type, transform, deadband}`
 - `ioa_stride`: IOA distance between instances
+- `trap_rules`: see 5.4 (phase 5)
+
+**Targets (routing).** A profile never names an IEC server: its mappings
+carry a **target label** (default `"default"`). Each device binds labels to
+servers and common addresses, so devices sharing a profile can feed different
+servers, and one label can fan out to several:
+
+```erlang
+%% sw-a, sw-b                                %% sw-c
+targets => #{<<"default">> =>                targets => #{<<"default">> =>
+    [#{server => <<"scada1">>, coa => 1}]}       [#{server => <<"scada2">>, coa => 1}]}
+```
+
+A label the profile uses but the device does not bind produces no mappings
+for that device (e.g. leave out `"counters"`); binding a label the profile
+does not use is an error (typo protection).
 
 **Instances** — the per-device list of what an instance-scoped template is
 expanded for. `slot` drives the IOA (stable, chosen by the engineer); the
@@ -140,16 +156,16 @@ SNMP table index substituted into the OID (`1.3.6.1.2.1.2.2.1.8.{index}`) is
 given either statically or as a key that is resolved at runtime (§5.3):
 
 ```erlang
-[#{slot => 1, index => 10101},                 %% static index
- #{slot => 3, key => {if_name, "Gi1/0/3"}}]    %% resolved by name (default for interfaces)
+[#{slot => 1, index => 10101},                                        %% static index
+ #{slot => 3, key => #{resolver => <<"if_name">>, value => <<"Gi1/0/3">>}}]  %% resolved by name
 ```
 
 The profile declares how keys resolve, generically as "find the row in table
 column X whose value equals K":
 
 ```erlang
-resolvers => #{if_name  => #{column => "1.3.6.1.2.1.31.1.1.1.1"},   %% IF-MIB ifName
-               if_descr => #{column => "1.3.6.1.2.1.2.2.1.2"}}      %% ifDescr fallback
+resolvers => #{<<"if_name">>  => #{column => <<"1.3.6.1.2.1.31.1.1.1.1">>},  %% IF-MIB ifName
+               <<"if_descr">> => #{column => <<"1.3.6.1.2.1.2.2.1.2">>}}     %% ifDescr
 ```
 
 The same mechanism covers other tables whose indexes are not stable, e.g.
@@ -221,20 +237,23 @@ Devices that support informs should use them (acknowledged).
 
 ### 5.5 Mapping and transforms
 
-A mapping = datapoint → `(server, coa, ioa, type, transform, deadband)`. The
-transform belongs to the mapping (two servers may want different types).
+An expanded mapping = datapoint → `(server, coa, ioa, type, transform,
+deadband)`, one per target binding. The transform belongs to the mapping (two
+targets may want different types).
 
 | Transform | Input | Output types |
 |---|---|---|
 | `linear` (scale, offset) | Integer/Gauge/Counter | M_ME_NA/NB/NC (+TD/TE/TF) |
-| `enum` (value → state map) | Integer | M_SP, M_DP |
+| `enum` (value → state map, optional default) | Integer | M_SP, M_DP, M_ST |
 | `bit` (mask) | Integer / OCTET STRING | M_SP |
 | `threshold` (op, limit) | numeric | M_SP |
 | `counter` (wrap 32/64) | Counter32/64 | M_IT_NA/TB |
 | `rate` (Δ/Δt × factor, wrap aware) | Counter32/64 | M_ME_NC/TF |
 
-Example: ifOperStatus `enum #{1 => true, 2 => false, '_' => {false, [invalid]}}`
-→ `m_sp_tb_1`.
+Example: ifOperStatus `#{kind => enum, map => #{<<"1">> => true, <<"2">> => false}}`
+→ `m_sp_tb_1`; a value without entry and without `default` is published with
+quality `invalid`. Transform parameters and the type compatibility above are
+checked by the schema (phase 1); applying them is `s2i_transform` (phase 2).
 
 `s2i_transform:apply(Transform, SnmpValue, PrevState) -> {ok, IecSpec, State}
 | skip` is pure and property-tested (wrap handling, scaling bounds, overflow →
@@ -244,30 +263,77 @@ Deadband (absolute / percent) is applied in the gateway before
 `iec60870_server:update/2`; erl60870's own change gate still suppresses
 identical values.
 
-### 5.6 Validation (on activate)
+### 5.6 Validation
 
-- `(server, coa, ioa)` unique across the whole active config
-- `coa` ∈ server `common_addresses`; IOA within `ioa_size`
-- transform output compatible with IEC type
-- OIDs syntactically valid; poll groups referenced exist
-- referenced profile / server exists; device names unique
+Three levels, all pure and returning *all* errors (for the UI), each as
+`#{path => [devices, <<"sw-a">>, targets, <<"default">>, 0, coa], error => unknown_coa}`:
 
-Validation is a pure function returning *all* errors (for the UI), not the
-first.
+1. **Entity schema** (`s2i_schema`, on every write): types, ranges, formats
+   (names, hosts, IPs, CIDRs, OIDs, engine ids), SNMPv3 fields per security
+   level, `w ≤ ⅔k`, `t2 < t1`, placeholders (`{index}` in instance OIDs,
+   `{slot}` in instance names), poll-group references inside a profile,
+   instance offsets `< ioa_stride`, transform/type compatibility, deadband only
+   on measured values, duplicates (COAs, slots, indexes, group names,
+   datapoint names, offsets per scope + label).
+2. **Configuration** (`s2i_validate:config/1`, on activate): profile, server,
+   COA, resolver and target-label references; comm-status IOA within the
+   server's `ioa_size`; listener port conflicts (same port on the same or a
+   wildcard address).
+3. **Expansion** (phase 2, on activate): `(server, coa, ioa)` unique across
+   all expanded mappings; IOAs within `ioa_size`.
+
+The canonical form produced by the schema is JSON-safe: atom keys and enums,
+binary strings, absent optionals. JSON input (binary keys and values, `null`)
+is accepted directly without creating atoms.
 
 ### 5.7 Staged vs active config
 
-Edits go to a **staged** config. `POST /api/v1/config/activate` validates,
-stores a new **active version** (with author, timestamp, diff summary in an
-audit table), and broadcasts `{config_activated, Vsn}`. Reconcilers react.
+Edits go to a **staged** config (`s2i_config:put/3`, `delete/3`; whole-config
+`import/2`, `revert/1`, `restore/2`). `activate/2` validates, stores a new
+immutable **version** (author, timestamp, comment) — the newest version is
+the **active** config — and sends `{s2i_config, {activated, Vsn}}` to
+subscribers. Reconcilers react. Rollback = `restore(Vsn)` + `activate`.
+Every change is recorded in an audit log with its actor.
 The UI warns when an activation restarts an IEC server (drops connections).
 Full config export/import as JSON for backup and version control.
 
+### 5.7a Stored secrets
+
+SNMP communities and USM passwords are encrypted before they reach Mnesia
+(`s2i_secret`): AES-256-GCM, random IV per value, stored as the text envelope
+`enc:v1:<key id>:<base64(iv|tag|ciphertext)>`. Staged config, versions and
+exports only contain envelopes; plaintext exists only where the SNMP manager
+needs it. Re-saving an unchanged plaintext keeps the old ciphertext (no
+spurious change).
+
+- **Key file, not environment variable**: env vars leak through
+  `/proc/<pid>/environ`, child processes and crash/diagnostic dumps; a file
+  can be locked down with permissions and kept out of the data backup.
+  `s2i_core.secret_key_file` (default `etc/secret.key`) holds the base64
+  32-byte key (`openssl rand -base64 32`). Startup is refused if the file is
+  accessible by group/others; a missing file is generated with mode 0600 and
+  a warning to back it up.
+- The key id in the envelope detects ciphertext from another key: put/import
+  of such values is rejected (`wrong_key`), and activation is blocked if the
+  key file was replaced. Exports are therefore only importable into an
+  installation with the same key. Key rotation (re-encrypt with a new key id)
+  is a later admin action.
+- The REST API never returns secrets (write-only fields, §9).
+
 ### 5.8 Mnesia tables (initial)
 
-`s2i_iec_server`, `s2i_device`, `s2i_profile`, `s2i_config_meta`
-(active version, staged flag), `s2i_audit`, `s2i_user`. Each record carries a
-`schema_vsn` field to make later `mnesia:transform_table/3` migrations explicit.
+| Table | Type | Content |
+|---|---|---|
+| `s2i_iec_server`, `s2i_profile`, `s2i_device` | set | staged entities `{Tab, Name, SchemaVsn, Map}` |
+| `s2i_config_version` | ordered_set | `{Tab, Vsn, Meta, Config}`, immutable snapshots |
+| `s2i_audit` | ordered_set | `{Tab, Id, Entry}`, newest 10 000 kept |
+| `s2i_user` | set | phase 6 |
+
+`SchemaVsn` makes later `mnesia:transform_table/3` migrations explicit; a
+table whose attributes differ from the code's layout fails startup loudly.
+Mnesia runs with a disc schema in `data/mnesia` (release-relative, `sys.config`).
+Whole-config snapshots per version keep diffs and rollback trivial; at the
+reference size a snapshot is a few hundred kB.
 Expanded datapoints/mappings are **not** stored; they are derived on
 activation and held in `s2i_routes`.
 
@@ -398,8 +464,10 @@ Ring buffers in `s2i_debug` give a new subscriber the recent history.
 ## 12. Implementation phases
 
 0. Umbrella skeleton, rebar3 aliases, CI, erl60870 dependency
-1. Config schema, validation, Mnesia store, staged/active, audit
-2. Profiles + expansion, instance resolution, transforms, route compiler (pure)
+1. Config schema (incl. transform parameters), validation, Mnesia store,
+   staged/active versions, audit, export/import
+2. Profile expansion + IOA collision check, overrides, instance resolution,
+   transforms, route compiler (pure)
 3. IEC side: reconciler, callback, quality seeding (+ upstream `remove/2`)
 4. SNMP polling: 4a snmpm spike, 4b v1/v2c, 4c v3/USM, device health
 5. Traps/informs: varbind match, trap rules, ordering rule, confirm-GET
@@ -429,6 +497,8 @@ configuration.
 | 8 | Point removal | upstream in erl60870 |
 | 9 | Device profiles | in v1 |
 | 10 | Unstable table indexes | runtime instance resolution by name column (ifName default), re-resolved on start / reconnect / reboot |
+| 11 | Routing in profiles | target labels in profile mappings, bound to servers per device |
+| 12 | Secrets at rest | AES-256-GCM envelopes, key from a 0600 key file (not env) |
 
 ## 15. Open points and planned extensions
 

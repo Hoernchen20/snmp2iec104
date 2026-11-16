@@ -11,3 +11,6 @@ erl_crash.dump
 /Mnesia.*/
 /frontend/node_modules/
 /frontend/dist/
+
+# secret key for stored SNMP credentials (never commit)
+secret.key
