@@ -64,6 +64,8 @@ apps/
   s2i_iec/    reconciler over iec60870 servers, quality / comm-status points
   s2i_web/    cowboy: REST, auth, sessions, WebSocket, static React build
 frontend/     React source (not part of the release; built into s2i_web/priv)
+Dockerfile    image and release tarball (ui -> rebar3 as prod release -> debian slim)
+compose.yaml  test setup: gateway + net-snmp demo agent (docker/demo-agent)
 ```
 
 `snmp2iec104` is the only app with an application callback. The other four
@@ -804,6 +806,7 @@ As implemented (phase 8):
 | 12 | Secrets at rest | AES-256-GCM envelopes, key from a 0600 key file (not env) |
 | 13 | Poll groups | timers inside the one `s2i_device` process per device (own snmpm user each), not one process per group |
 | 14 | Trap rule targets | datapoint template + table index from a varbind (`suffix` or `value`), looked up per template in the compiled routes; never by guessed index |
+| 15 | Packaging | one multi-stage Dockerfile builds the UI, the self-contained release (`prod` profile, ERTS included) and the image; a `v*` tag runs it natively on amd64/arm64 in GitHub Actions (image on ghcr.io, tarballs on the GitHub release). In the image the node is `snmp2iec104@localhost` (Mnesia is bound to the node name; the container hostname changes) and distribution listens on loopback only |
 
 ## 15. Open points and planned extensions
 
@@ -819,3 +822,6 @@ As implemented (phase 8):
   separate poll groups per profile (e.g. `counters => 60000`), and HC
   (64-bit) counters on v2c/v3. If the number of OIDs per device grows a lot,
   add GETBULK-based table polling as an alternative to chunked GET.
+
+- **Password policy** Implement a password policy with length, min characters of
+  various types. Configurable via website.

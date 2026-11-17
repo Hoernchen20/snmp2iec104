@@ -1,0 +1,38 @@
+# Test setup: the gateway built from this checkout plus a demo SNMP agent.
+#
+#   docker compose up --build        then open http://localhost:8080
+#                                     (user admin, password changeme; you are
+#                                     asked to change it at first login)
+#
+# Published on 127.0.0.1 only by default. To reach the gateway from other
+# machines (real devices sending traps, an IEC 104 master on the LAN), set
+# S2I_BIND=0.0.0.0 (e.g. in a .env file next to this one).
+name: snmp2iec104
+
+services:
+  gateway:
+    build: .
+    image: snmp2iec104:local
+    environment:
+      # only used while there are no users (first start, or after
+      # `docker compose down -v`)
+      S2I_ADMIN_PASSWORD: ${S2I_ADMIN_PASSWORD:-changeme}
+    ports:
+      - "${S2I_BIND:-127.0.0.1}:${S2I_HTTP_PORT:-8080}:8080/tcp"
+      - "${S2I_BIND:-127.0.0.1}:${S2I_IEC_PORT:-2404}:2404/tcp"
+      - "${S2I_BIND:-127.0.0.1}:${S2I_TRAP_PORT:-1162}:162/udp"
+    volumes:
+      - data:/opt/snmp2iec104/data
+      - etc:/opt/snmp2iec104/etc
+    restart: unless-stopped
+
+  # Poll it as host "demo-agent" (v2c community "public"); send traps
+  # with `docker compose exec demo-agent send-traps [down|up|cold|inform]`.
+  demo-agent:
+    build: docker/demo-agent
+    image: snmp2iec104-demo-agent:local
+    restart: unless-stopped
+
+volumes:
+  data:
+  etc:

@@ -1,0 +1,198 @@
+{
+  "servers": {
+    "scada": {
+      "name": "scada",
+      "description": "IEC 104 slave for a test master (e.g. QTester104) on port 2404",
+      "params": {
+        "k": 12,
+        "w": 8,
+        "t1": 15000,
+        "ioa_size": 3,
+        "coa_size": 2,
+        "t2": 10000,
+        "t3": 20000,
+        "cot_size": 2
+      },
+      "redundancy": {
+        "mode": "connection",
+        "buffer": 1000,
+        "groups": []
+      },
+      "transport": {
+        "port": 2404,
+        "ip": "0.0.0.0",
+        "kind": "tcp"
+      },
+      "common_addresses": [
+        1
+      ]
+    }
+  },
+  "profiles": {
+    "net-snmp-host": {
+      "name": "net-snmp-host",
+      "description": "Linux host running net-snmp (the compose demo agent)",
+      "datapoints": [
+        {
+          "name": "uptime",
+          "scope": "device",
+          "description": "sysUpTime in seconds",
+          "oid": "1.3.6.1.2.1.1.3.0",
+          "mappings": [
+            {
+              "type": "m_me_tf_1",
+              "transform": {
+                "offset": 0,
+                "kind": "linear",
+                "scale": 0.01
+              },
+              "ioa_offset": 0,
+              "target": "default"
+            }
+          ],
+          "poll_group": "slow"
+        },
+        {
+          "name": "load1",
+          "scope": "device",
+          "description": "1 minute load average (laLoadInt.1 / 100)",
+          "oid": "1.3.6.1.4.1.2021.10.1.5.1",
+          "mappings": [
+            {
+              "type": "m_me_tf_1",
+              "transform": {
+                "offset": 0,
+                "kind": "linear",
+                "scale": 0.01
+              },
+              "ioa_offset": 1,
+              "deadband": {
+                "value": 0.05,
+                "kind": "absolute"
+              },
+              "target": "default"
+            }
+          ],
+          "poll_group": "fast"
+        },
+        {
+          "name": "if{slot}_up",
+          "scope": "instance",
+          "description": "ifOperStatus = up",
+          "oid": "1.3.6.1.2.1.2.2.1.8.{index}",
+          "mappings": [
+            {
+              "type": "m_sp_tb_1",
+              "transform": {
+                "default": false,
+                "map": {
+                  "1": true
+                },
+                "kind": "enum"
+              },
+              "ioa_offset": 0,
+              "target": "default"
+            }
+          ],
+          "poll_group": "fast"
+        },
+        {
+          "name": "if{slot}_in_rate",
+          "scope": "instance",
+          "description": "received bytes per second (ifInOctets)",
+          "oid": "1.3.6.1.2.1.2.2.1.10.{index}",
+          "mappings": [
+            {
+              "type": "m_me_tf_1",
+              "transform": {
+                "factor": 1,
+                "kind": "rate"
+              },
+              "ioa_offset": 1,
+              "target": "default"
+            }
+          ],
+          "poll_group": "fast"
+        }
+      ],
+      "ioa_stride": 10,
+      "resolvers": {
+        "if_name": {
+          "column": "1.3.6.1.2.1.2.2.1.2"
+        }
+      },
+      "trap_rules": [
+        {
+          "name": "link_down",
+          "set": 2,
+          "instance": {
+            "from": "value",
+            "oid": "1.3.6.1.2.1.2.2.1.1"
+          },
+          "description": "linkDown sets if{slot}_up to down",
+          "datapoint": "if{slot}_up",
+          "conditions": [],
+          "confirm_get_after": 30000,
+          "trap_oid": "1.3.6.1.6.3.1.1.5.3"
+        },
+        {
+          "name": "link_up",
+          "set": 1,
+          "instance": {
+            "from": "value",
+            "oid": "1.3.6.1.2.1.2.2.1.1"
+          },
+          "description": "linkUp sets if{slot}_up to up",
+          "datapoint": "if{slot}_up",
+          "conditions": [],
+          "trap_oid": "1.3.6.1.6.3.1.1.5.4"
+        }
+      ],
+      "poll_groups": {
+        "fast": 5000,
+        "slow": 30000
+      }
+    }
+  },
+  "devices": {
+    "demo-agent": {
+      "timeout": 2000,
+      "enabled": true,
+      "name": "demo-agent",
+      "port": 161,
+      "profile": "net-snmp-host",
+      "host": "demo-agent",
+      "description": "net-snmp agent of the docker compose test setup",
+      "snmp": {
+        "version": "v2c",
+        "community": "public"
+      },
+      "instances": [
+        {
+          "index": 1,
+          "slot": 1
+        },
+        {
+          "slot": 2,
+          "key": {
+            "value": "eth0",
+            "resolver": "if_name"
+          }
+        }
+      ],
+      "targets": {
+        "default": [
+          {
+            "server": "scada",
+            "coa": 1
+          }
+        ]
+      },
+      "overrides": [],
+      "ioa_base": 1000,
+      "down_after": 3,
+      "max_varbinds": 30,
+      "retries": 1
+    }
+  }
+}

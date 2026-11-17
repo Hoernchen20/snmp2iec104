@@ -1,0 +1,23 @@
+#!/bin/sh
+# Send demo notifications to the gateway (docker compose exec demo-agent send-traps).
+#   send-traps [down|up|cold|inform] [ifIndex]   (default: down 1)
+set -eu
+target=${GATEWAY:-gateway}:162
+what=${1:-down}
+if=${2:-1}
+
+ifIndex=1.3.6.1.2.1.2.2.1.1.$if
+ifAdmin=1.3.6.1.2.1.2.2.1.7.$if
+ifOper=1.3.6.1.2.1.2.2.1.8.$if
+
+case $what in
+    down)   snmptrap -v 2c -c public "$target" '' 1.3.6.1.6.3.1.1.5.3 \
+                "$ifIndex" i "$if" "$ifAdmin" i 1 "$ifOper" i 2 ;;
+    up)     snmptrap -v 2c -c public "$target" '' 1.3.6.1.6.3.1.1.5.4 \
+                "$ifIndex" i "$if" "$ifAdmin" i 1 "$ifOper" i 1 ;;
+    cold)   snmptrap -v 2c -c public "$target" '' 1.3.6.1.6.3.1.1.5.1 ;;
+    inform) snmpinform -v 2c -c public "$target" '' 1.3.6.1.6.3.1.1.5.3 \
+                "$ifIndex" i "$if" "$ifAdmin" i 1 "$ifOper" i 2 ;;
+    *)      echo "usage: send-traps [down|up|cold|inform] [ifIndex]" >&2; exit 2 ;;
+esac
+echo "sent $what (ifIndex $if) to $target"

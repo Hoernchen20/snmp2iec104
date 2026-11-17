@@ -17,3 +17,7 @@ erl_crash.dump
 
 # secret key for stored SNMP credentials (never commit)
 secret.key
+
+# docker: local compose settings, release tarballs (docker buildx ... -o dist)
+/.env
+/dist/
