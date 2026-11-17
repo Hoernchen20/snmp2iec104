@@ -9,6 +9,7 @@ import { DebugPage } from "./pages/DebugPage";
 import { EntityEditor } from "./pages/EntityEditor";
 import { EntityList } from "./pages/EntityList";
 import { LoginPage } from "./pages/LoginPage";
+import { MibsPage } from "./pages/MibsPage";
 import { StatusPage } from "./pages/StatusPage";
 import { ToolsPage } from "./pages/ToolsPage";
 import { UsersPage } from "./pages/UsersPage";
@@ -34,6 +35,8 @@ export function App() {
           <Route path="/config" element={<ConfigPage admin={admin} />} />
           <Route path="/debug" element={<DebugPage />} />
           <Route path="/tools" element={<ToolsPage />} />
+          <Route path="/mibs" element={<MibsPage admin={admin} view="modules" />} />
+          <Route path="/mibs/browse" element={<MibsPage admin={admin} view="browse" />} />
           <Route path="/users" element={admin ? <UsersPage me={me.data} /> : <Navigate to="/" />} />
           <Route path="/account" element={<AccountPage me={me.data} />} />
           <Route path="*" element={<Navigate to="/" />} />

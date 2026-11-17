@@ -3,6 +3,8 @@ import { useSearchParams } from "react-router";
 import { useSnmpGet, useSnmpWalk, useStatus } from "../api/hooks";
 import type { Varbind } from "../api/types";
 import { ErrorBox, Notice } from "../components/ui";
+import { OidName, ValueLabel } from "../mib/Oid";
+import { useOidInfos } from "../mib/names";
 
 export function ToolsPage() {
   const [params, setParams] = useSearchParams();
@@ -98,6 +100,7 @@ function WalkTool({ device }: { device: string }) {
 }
 
 export function Varbinds({ varbinds }: { varbinds: Varbind[] }) {
+  const lookup = useOidInfos(varbinds.map((v) => v.oid));
   if (varbinds.length === 0) return <p className="muted">No varbinds.</p>;
   return (
     <table className="compact">
@@ -109,16 +112,25 @@ export function Varbinds({ varbinds }: { varbinds: Varbind[] }) {
         </tr>
       </thead>
       <tbody>
-        {varbinds.map((v, i) => (
-          <tr key={i}>
-            <td className="mono">{v.oid}</td>
-            <td>{v.type}</td>
-            <td className="mono">
-              {v.value === null ? <span title="binary">0x{v.hex}</span> : String(v.value)}
-              {v.hex && v.value !== null ? <span className="muted"> (0x{v.hex})</span> : null}
-            </td>
-          </tr>
-        ))}
+        {varbinds.map((v, i) => {
+          const info = lookup(v.oid);
+          return (
+            <tr key={i}>
+              <td>
+                <OidName oid={v.oid} info={info ?? null} numeric />
+              </td>
+              <td>{v.type}</td>
+              <td className="mono">
+                {v.value === null ? (
+                  <span title="binary">0x{v.hex}</span>
+                ) : (
+                  <ValueLabel info={info} value={v.value} text={String(v.value)} />
+                )}
+                {v.hex && v.value !== null ? <span className="muted"> (0x{v.hex})</span> : null}
+              </td>
+            </tr>
+          );
+        })}
       </tbody>
     </table>
   );

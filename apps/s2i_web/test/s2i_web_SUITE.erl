@@ -27,6 +27,7 @@ forced password change.
          logout_ends_session/1,
          status_of_devices_and_servers/1,
          snmp_tools_through_device/1,
+         mib_library/1,
          ws_upgrade_needs_session_and_origin/1,
          ws_protocol_errors_and_ping/1,
          ws_device_values_and_trace/1,
@@ -62,6 +63,7 @@ all() ->
      logout_ends_session,
      status_of_devices_and_servers,
      snmp_tools_through_device,
+     mib_library,
      ws_upgrade_needs_session_and_origin,
      ws_protocol_errors_and_ping,
      ws_device_values_and_trace,
@@ -365,6 +367,64 @@ snmp_tools_through_device(Config) ->
     {504, _, #{<<"error">> := <<"timeout">>}} =
         req(Config, post, "tools/snmp/get", A, #{device => <<"sw-a">>, oids => [<<"1.3.6.1.2.1.1.3.0">>]}),
     ok = s2i_fake_agent:silent(Agent, false).
+
+-define(TEST_MIB, <<"TEST-MIB DEFINITIONS ::= BEGIN\n"
+                   "IMPORTS MODULE-IDENTITY, OBJECT-TYPE, enterprises FROM SNMPv2-SMI;\n"
+                   "testMIB MODULE-IDENTITY LAST-UPDATED \"202601010000Z\" ORGANIZATION \"x\"\n"
+                   "    CONTACT-INFO \"x\" DESCRIPTION \"Test\" ::= { enterprises 99999 }\n"
+                   "testState OBJECT-TYPE SYNTAX INTEGER { on(1), off(2) } MAX-ACCESS read-only\n"
+                   "    STATUS current DESCRIPTION \"Breaker\" ::= { testMIB 1 }\n"
+                   "END\n">>).
+
+mib_library(Config) ->
+    A = admin(Config),
+    {200, _, Builtin} = req(Config, get, "mibs", A),
+    ?assert(lists:member(#{<<"name">> => <<"SNMPv2-MIB">>, <<"origin">> => <<"builtin">>, <<"status">> => <<"ok">>},
+                         [maps:with([<<"name">>, <<"origin">>, <<"status">>], M) || M <- Builtin])),
+    {200, _, #{<<"modules">> := [#{<<"name">> := <<"TEST-MIB">>, <<"status">> := <<"ok">>,
+                                   <<"uploaded_by">> := <<"admin">>}],
+               <<"skipped">> := []}} =
+        req(Config, post, "mibs", A, #{sources => [?TEST_MIB]}),
+    {200, _, #{<<"origin">> := <<"uploaded">>, <<"objects">> := 2}} = req(Config, get, "mibs/TEST-MIB", A),
+    {200, H, Source} = raw(Config, get, "mibs/TEST-MIB/source", [{"cookie", A}], <<>>),
+    ?assertEqual(?TEST_MIB, Source),
+    ?assertEqual("text/plain; charset=utf-8", proplists:get_value("content-type", H)),
+    {404, _, _} = req(Config, get, "mibs/NOPE-MIB", A),
+    %% the values the gateway polls, by name
+    {200, _, #{<<"oids">> := [State, null, null, SysUpTime],
+               <<"names">> := [#{<<"oid">> := <<"1.3.6.1.4.1.99999.1.0">>},
+                               #{<<"error">> := <<"not_found">>}, #{<<"error">> := <<"invalid">>}]}} =
+        req(Config, post, "oids/translate", A,
+            #{oids => [<<"1.3.6.1.4.1.99999.1.0">>, <<"x.y">>, <<"7.7">>, <<"1.3.6.1.2.1.1.3.0">>],
+              names => [<<"TEST-MIB::testState.0">>, <<"nope">>, 42]}),
+    ?assertMatch(#{<<"name">> := <<"testState">>, <<"index">> := <<"0">>, <<"module">> := <<"TEST-MIB">>,
+                   <<"enums">> := [#{<<"value">> := 1, <<"name">> := <<"on">>}, _]}, State),
+    ?assertMatch(#{<<"name">> := <<"sysUpTime">>, <<"module">> := <<"SNMPv2-MIB">>}, SysUpTime),
+    {422, _, _} = req(Config, post, "oids/translate", A, #{oids => lists:duplicate(1001, <<"1.3">>)}),
+    {200, _, #{<<"def">> := #{<<"name">> := <<"testMIB">>, <<"kind">> := <<"node">>},
+               <<"path">> := [#{<<"name">> := <<"iso">>} | _],
+               <<"children">> := [#{<<"name">> := <<"testState">>, <<"has_children">> := false}]}} =
+        req(Config, get, "oids/1.3.6.1.4.1.99999", A),
+    {422, _, _} = req(Config, get, "oids/abc", A),
+    {200, _, [#{<<"name">> := <<"testState">>, <<"oid">> := <<"1.3.6.1.4.1.99999.1">>}]} =
+        req(Config, get, "oids?q=teststate", A),
+    {400, _, _} = req(Config, get, "oids?q=", A),
+    {422, _, _} = req(Config, get, "oids?q=x&limit=0", A),
+    %% viewers read, admins change
+    V = login(Config, <<"view">>, <<"viewer-password">>),
+    {200, _, [_ | _]} = req(Config, get, "mibs", V),
+    {403, _, _} = req(Config, post, "mibs", V, #{sources => [?TEST_MIB]}),
+    {403, _, _} = req(Config, delete, "mibs/TEST-MIB", V),
+    {422, _, #{<<"errors">> := [#{<<"path">> := [<<"sources">>, 0], <<"error">> := <<"no_module">>}]}} =
+        req(Config, post, "mibs", A, #{source => <<"not a MIB">>}),
+    {400, _, _} = req(Config, post, "mibs", A, #{}),
+    {409, _, #{<<"error">> := <<"builtin">>}} = req(Config, delete, "mibs/SNMPv2-MIB", A),
+    {204, _, _} = req(Config, delete, "mibs/TEST-MIB", A),
+    {404, _, _} = req(Config, delete, "mibs/TEST-MIB", A),
+    {200, _, #{<<"oids">> := [#{<<"name">> := <<"enterprises">>, <<"index">> := <<"99999.1.0">>}]}} =
+        req(Config, post, "oids/translate", A, #{oids => [<<"1.3.6.1.4.1.99999.1.0">>]}),
+    {200, _, [#{<<"action">> := <<"mib_delete">>, <<"name">> := <<"TEST-MIB">>} | _]} =
+        req(Config, get, "config/audit?limit=1", A).
 
 %%% --- WebSocket (§9.3) -------------------------------------------------------
 
@@ -688,8 +748,9 @@ raw(Config, Method, Path, Headers, Body) ->
               end,
     {ok, {{_, Status, _}, RespHeaders, RespBody}} =
         httpc:request(Method, Request, [{timeout, 30000}], [{body_format, binary}]),
-    Decoded = case RespBody of
-                  <<>> -> none;
+    Decoded = case {RespBody, proplists:get_value("content-type", RespHeaders)} of
+                  {<<>>, _} -> none;
+                  {_, "text/plain" ++ _} -> RespBody;
                   _ -> json:decode(RespBody)
               end,
     {Status, RespHeaders, Decoded}.

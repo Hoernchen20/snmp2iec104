@@ -21,6 +21,7 @@ import {
   variants,
 } from "./logic";
 import type { JsonSchema, Path } from "./types";
+import { OidHint } from "../mib/OidHint";
 
 interface FieldProps {
   schema: JsonSchema;
@@ -412,6 +413,8 @@ function Scalar({ schema, value, onChange, required, id }: FieldProps) {
       );
     case "string":
       if (schema.writeOnly) return <SecretInput id={id} value={value} onChange={onChange} required={required} />;
+      if (schema.format === "oid" || schema.format === "oid-template")
+        return <OidInput id={id} value={value} onChange={onChange} required={required} template={schema.format === "oid-template"} />;
       return (
         <input
           id={id}
@@ -527,5 +530,37 @@ function RawJson({ id, value, onChange }: { id?: string; value: unknown; onChang
         }
       }}
     />
+  );
+}
+
+/**
+ * Numeric OID with its MIB name below; a name typed instead
+ * (`ifOperStatus`, `IF-MIB::ifOperStatus.0`) can be turned into the number.
+ */
+function OidInput({
+  id,
+  value,
+  onChange,
+  required,
+  template,
+}: {
+  id?: string;
+  value: unknown;
+  onChange: (v: unknown) => void;
+  required?: boolean;
+  template: boolean;
+}) {
+  const text = typeof value === "string" ? value : value === undefined ? "" : String(value);
+  return (
+    <span className="oid-input">
+      <input
+        id={id}
+        value={text}
+        spellCheck={false}
+        placeholder={template ? "1.3.6.1.2.1.2.2.1.8.{index} or a MIB name" : "numeric OID or a MIB name"}
+        onChange={(e) => onChange(e.target.value === "" && !required ? undefined : e.target.value)}
+      />
+      <OidHint text={text} template={template} onUse={(oid) => onChange(oid)} />
+    </span>
   );
 }

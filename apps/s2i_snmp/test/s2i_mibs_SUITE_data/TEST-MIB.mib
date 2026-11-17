@@ -1,0 +1,70 @@
+-- Test MIB for s2i_mibs_SUITE
+TEST-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE, NOTIFICATION-TYPE, Integer32, enterprises
+        FROM SNMPv2-SMI   -- comment FROM FOO-MIB
+    DisplayString, TruthValue FROM SNMPv2-TC;
+
+testMIB MODULE-IDENTITY
+    LAST-UPDATED "202601010000Z"
+    ORGANIZATION "snmp2iec104"
+    CONTACT-INFO "none"
+    DESCRIPTION "Test MIB -- with dashes and the word END"
+    ::= { enterprises 99999 }
+
+testObjects OBJECT IDENTIFIER ::= { testMIB 1 }
+
+testState OBJECT-TYPE
+    SYNTAX INTEGER { on(1), off(2), unknown(3) }
+    MAX-ACCESS read-only
+    STATUS current
+    DESCRIPTION "Breaker state"
+    ::= { testObjects 1 }
+
+testTable OBJECT-TYPE
+    SYNTAX SEQUENCE OF TestEntry
+    MAX-ACCESS not-accessible
+    STATUS current
+    DESCRIPTION "Feeders"
+    ::= { testObjects 2 }
+
+testEntry OBJECT-TYPE
+    SYNTAX TestEntry
+    MAX-ACCESS not-accessible
+    STATUS current
+    DESCRIPTION "A feeder"
+    INDEX { testIndex }
+    ::= { testTable 1 }
+
+TestEntry ::= SEQUENCE { testIndex Integer32, testName DisplayString, testAlarm TruthValue }
+
+testIndex OBJECT-TYPE
+    SYNTAX Integer32 (1..100)
+    MAX-ACCESS not-accessible
+    STATUS current
+    DESCRIPTION "Index"
+    ::= { testEntry 1 }
+
+testName OBJECT-TYPE
+    SYNTAX DisplayString
+    UNITS "chars"
+    MAX-ACCESS read-only
+    STATUS current
+    DESCRIPTION "Name"
+    ::= { testEntry 2 }
+
+testAlarm OBJECT-TYPE
+    SYNTAX TruthValue
+    MAX-ACCESS read-only
+    STATUS current
+    DESCRIPTION "Alarm"
+    ::= { testEntry 3 }
+
+testNotifications OBJECT IDENTIFIER ::= { testMIB 0 }
+
+testStateChange NOTIFICATION-TYPE
+    OBJECTS { testState }
+    STATUS current
+    DESCRIPTION "The state changed"
+    ::= { testNotifications 1 }
+END

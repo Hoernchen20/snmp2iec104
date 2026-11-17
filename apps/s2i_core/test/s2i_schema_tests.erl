@@ -523,6 +523,13 @@ json_schema_field_order_test() ->
     #{properties := #{transport := #{oneOf := [#{'x-order' := [kind, port, ip]} | _]}}} =
         s2i_schema:json_schema(server).
 
+json_schema_oid_format_test() ->
+    %% the UI shows MIB names next to fields with these formats
+    #{properties := #{datapoints := #{items := #{properties := Dp}},
+                      trap_rules := #{items := #{properties := Rule}}}} = s2i_schema:json_schema(profile),
+    ?assertMatch(#{format := <<"oid-template">>}, maps:get(oid, Dp)),
+    ?assertMatch(#{format := <<"oid">>}, maps:get(trap_oid, Rule)).
+
 json_schema_union_test() ->
     #{properties := #{snmp := #{oneOf := Variants, discriminator := #{propertyName := version}}}} =
         s2i_schema:json_schema(device),

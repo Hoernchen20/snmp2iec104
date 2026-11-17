@@ -61,7 +61,13 @@ routes() ->
         {[<<"status">>, <<"devices">>, name], [{<<"GET">>, device_status, viewer}]},
         {[<<"status">>, <<"servers">>], [{<<"GET">>, server_status_list, viewer}]},
         {[<<"tools">>, <<"snmp">>, <<"get">>], [{<<"POST">>, snmp_get, viewer}]},
-        {[<<"tools">>, <<"snmp">>, <<"walk">>], [{<<"POST">>, snmp_walk, viewer}]}].
+        {[<<"tools">>, <<"snmp">>, <<"walk">>], [{<<"POST">>, snmp_walk, viewer}]},
+        {[<<"mibs">>], [{<<"GET">>, mib_list, viewer}, {<<"POST">>, mib_upload, admin}]},
+        {[<<"mibs">>, name], [{<<"GET">>, mib_get, viewer}, {<<"DELETE">>, mib_delete, admin}]},
+        {[<<"mibs">>, name, <<"source">>], [{<<"GET">>, mib_source, viewer}]},
+        {[<<"oids">>], [{<<"GET">>, oid_search, viewer}]},
+        {[<<"oids">>, <<"translate">>], [{<<"POST">>, oid_translate, viewer}]},
+        {[<<"oids">>, oid], [{<<"GET">>, oid_node, viewer}]}].
 
 -doc """
 The action for a request. Entity actions carry their kind
@@ -136,6 +142,7 @@ status(not_found) -> 404;
 status(method_not_allowed) -> 405;
 status(no_changes) -> 409;
 status(last_admin) -> 409;
+status(builtin) -> 409;
 status(payload_too_large) -> 413;
 status(unsupported_media_type) -> 415;
 status(invalid) -> 422;

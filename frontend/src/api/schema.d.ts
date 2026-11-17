@@ -57,14 +57,14 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/config/active": {
+    "/users": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** The active configuration (404 before the first activation) */
+        /** All users (admin) */
         get: {
             parameters: {
                 query?: never;
@@ -80,10 +80,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": {
-                            config?: components["schemas"]["Config"];
-                            vsn?: number;
-                        };
+                        "application/json": components["schemas"]["User"][];
                     };
                 };
                 /** @description error */
@@ -99,6 +96,60 @@ export interface paths {
         };
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tools/snmp/get": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** GET through a configured, running device (at most max_varbinds OIDs) */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        device: string;
+                        oids: string[];
+                    };
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            varbinds?: components["schemas"]["Varbind"][];
+                        };
+                    };
+                };
+                /** @description error */
+                default: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;
@@ -152,21 +203,21 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/config/export": {
+    "/oids/{oid}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Staged or active configuration for backup (secrets as envelopes) */
+        /** A node of the OID tree (dotted OID) with its children */
         get: {
             parameters: {
-                query?: {
-                    source?: "staged" | "active";
-                };
+                query?: never;
                 header?: never;
-                path?: never;
+                path: {
+                    oid: string;
+                };
                 cookie?: never;
             };
             requestBody?: never;
@@ -177,7 +228,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["Config"];
+                        "application/json": components["schemas"]["OidNode"];
                     };
                 };
                 /** @description error */
@@ -199,7 +250,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/config/import": {
+    "/tools/snmp/walk": {
         parameters: {
             query?: never;
             header?: never;
@@ -208,7 +259,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Replace the staged configuration (admin) */
+        /** Walk a subtree through a configured, running device */
         post: {
             parameters: {
                 query?: never;
@@ -218,16 +269,26 @@ export interface paths {
             };
             requestBody: {
                 content: {
-                    "application/json": components["schemas"]["Config"];
+                    "application/json": {
+                        /** @default 1000 */
+                        max?: number;
+                        device: string;
+                        oid: string;
+                    };
                 };
             };
             responses: {
-                /** @description done */
-                204: {
+                /** @description OK */
+                200: {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": {
+                            varbinds?: components["schemas"]["Varbind"][];
+                            truncated?: boolean;
+                        };
+                    };
                 };
                 /** @description error */
                 default: {
@@ -246,7 +307,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/config/revert": {
+    "/me/password": {
         parameters: {
             query?: never;
             header?: never;
@@ -255,7 +316,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Discard staged changes (admin) */
+        /** Change the own password (ends the user's other sessions) */
         post: {
             parameters: {
                 query?: never;
@@ -263,14 +324,23 @@ export interface paths {
                 path?: never;
                 cookie?: never;
             };
-            requestBody?: never;
+            requestBody: {
+                content: {
+                    "application/json": {
+                        current_password: string;
+                        new_password: string;
+                    };
+                };
+            };
             responses: {
-                /** @description done */
-                204: {
+                /** @description OK */
+                200: {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": components["schemas"]["Me"];
+                    };
                 };
                 /** @description error */
                 default: {
@@ -289,14 +359,14 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/config/staged": {
+    "/status/devices": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** The staged configuration */
+        /** Devices of the active configuration */
         get: {
             parameters: {
                 query?: never;
@@ -312,10 +382,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": {
-                            config?: components["schemas"]["Config"];
-                            has_changes?: boolean;
-                        };
+                        "application/json": components["schemas"]["DeviceStatus"][];
                     };
                 };
                 /** @description error */
@@ -382,19 +449,21 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/config/versions": {
+    "/users/{name}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Activated versions, newest first */
+        /** One user (admin) */
         get: {
             parameters: {
                 query?: never;
                 header?: never;
-                path?: never;
+                path: {
+                    name: string;
+                };
                 cookie?: never;
             };
             requestBody?: never;
@@ -405,7 +474,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["Version"][];
+                        "application/json": components["schemas"]["User"];
                     };
                 };
                 /** @description error */
@@ -419,32 +488,21 @@ export interface paths {
                 };
             };
         };
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/config/versions/{vsn}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** One activated version */
-        get: {
+        /** Create or update (admin); a password set for someone else must be changed on their next login */
+        put: {
             parameters: {
                 query?: never;
                 header?: never;
                 path: {
-                    vsn: number;
+                    name: string;
                 };
                 cookie?: never;
             };
-            requestBody?: never;
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["UserInput"];
+                };
+            };
             responses: {
                 /** @description OK */
                 200: {
@@ -452,10 +510,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": {
-                            config?: components["schemas"]["Config"];
-                            vsn?: number;
-                        };
+                        "application/json": components["schemas"]["User"];
                     };
                 };
                 /** @description error */
@@ -469,30 +524,14 @@ export interface paths {
                 };
             };
         };
-        put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/config/versions/{vsn}/restore": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Load a version into the staged configuration (admin); activate to roll back */
-        post: {
+        /** Delete (admin); not the last admin */
+        delete: {
             parameters: {
                 query?: never;
                 header?: never;
                 path: {
-                    vsn: number;
+                    name: string;
                 };
                 cookie?: never;
             };
@@ -516,52 +555,6 @@ export interface paths {
                 };
             };
         };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/devices": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Staged devices (sorted by name) */
-        get: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description OK */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["Device"][];
-                    };
-                };
-                /** @description error */
-                default: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["Error"];
-                    };
-                };
-            };
-        };
-        put?: never;
-        post?: never;
-        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -678,7 +671,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/login": {
+    "/config/versions/{vsn}/restore": {
         parameters: {
             query?: never;
             header?: never;
@@ -687,64 +680,14 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Log in; sets the session cookie */
+        /** Load a version into the staged configuration (admin); activate to roll back */
         post: {
             parameters: {
                 query?: never;
                 header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": {
-                        password: string;
-                        username: string;
-                    };
+                path: {
+                    vsn: number;
                 };
-            };
-            responses: {
-                /** @description OK */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["Me"];
-                    };
-                };
-                /** @description error */
-                default: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["Error"];
-                    };
-                };
-            };
-        };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/logout": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** End the session */
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
                 cookie?: never;
             };
             requestBody?: never;
@@ -773,19 +716,21 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/me": {
+    "/servers/{name}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** The logged-in user */
+        /** One staged entity */
         get: {
             parameters: {
                 query?: never;
                 header?: never;
-                path?: never;
+                path: {
+                    name: string;
+                };
                 cookie?: never;
             };
             requestBody?: never;
@@ -796,7 +741,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["Me"];
+                        "application/json": components["schemas"]["Server"];
                     };
                 };
                 /** @description error */
@@ -810,37 +755,19 @@ export interface paths {
                 };
             };
         };
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/me/password": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Change the own password (ends the user's other sessions) */
-        post: {
+        /** Create or replace (admin); schema-checked, references are checked on validate/activate */
+        put: {
             parameters: {
                 query?: never;
                 header?: never;
-                path?: never;
+                path: {
+                    name: string;
+                };
                 cookie?: never;
             };
             requestBody: {
                 content: {
-                    "application/json": {
-                        current_password: string;
-                        new_password: string;
-                    };
+                    "application/json": components["schemas"]["Server"];
                 };
             };
             responses: {
@@ -850,7 +777,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["Me"];
+                        "application/json": components["schemas"]["Server"];
                     };
                 };
                 /** @description error */
@@ -864,25 +791,57 @@ export interface paths {
                 };
             };
         };
-        delete?: never;
+        post?: never;
+        /** Delete (admin) */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    name: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description done */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description error */
+                default: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/openapi.json": {
+    "/config/versions/{vsn}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** This document */
+        /** One activated version */
         get: {
             parameters: {
                 query?: never;
                 header?: never;
-                path?: never;
+                path: {
+                    vsn: number;
+                };
                 cookie?: never;
             };
             requestBody?: never;
@@ -893,7 +852,10 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": Record<string, never>;
+                        "application/json": {
+                            config?: components["schemas"]["Config"];
+                            vsn?: number;
+                        };
                     };
                 };
                 /** @description error */
@@ -915,14 +877,61 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/profiles": {
+    "/status/devices/{name}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Staged profiles (sorted by name) */
+        /** One device */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    name: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["DeviceStatus"];
+                    };
+                };
+                /** @description error */
+                default: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/config/active": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The active configuration (404 before the first activation) */
         get: {
             parameters: {
                 query?: never;
@@ -938,7 +947,58 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["Profile"][];
+                        "application/json": {
+                            config?: components["schemas"]["Config"];
+                            vsn?: number;
+                        };
+                    };
+                };
+                /** @description error */
+                default: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/config/staged": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The staged configuration */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            config?: components["schemas"]["Config"];
+                            has_changes?: boolean;
+                        };
                     };
                 };
                 /** @description error */
@@ -1071,14 +1131,14 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/servers": {
+    "/openapi.json": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Staged servers (sorted by name) */
+        /** This document */
         get: {
             parameters: {
                 query?: never;
@@ -1094,7 +1154,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["Server"][];
+                        "application/json": Record<string, never>;
                     };
                 };
                 /** @description error */
@@ -1111,117 +1171,6 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/servers/{name}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** One staged entity */
-        get: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path: {
-                    name: string;
-                };
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description OK */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["Server"];
-                    };
-                };
-                /** @description error */
-                default: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["Error"];
-                    };
-                };
-            };
-        };
-        /** Create or replace (admin); schema-checked, references are checked on validate/activate */
-        put: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path: {
-                    name: string;
-                };
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": components["schemas"]["Server"];
-                };
-            };
-            responses: {
-                /** @description OK */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["Server"];
-                    };
-                };
-                /** @description error */
-                default: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["Error"];
-                    };
-                };
-            };
-        };
-        post?: never;
-        /** Delete (admin) */
-        delete: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path: {
-                    name: string;
-                };
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description done */
-                204: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-                /** @description error */
-                default: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["Error"];
-                    };
-                };
-            };
-        };
         options?: never;
         head?: never;
         patch?: never;
@@ -1277,14 +1226,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/status/devices": {
+    "/logout": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Devices of the active configuration */
+        get?: never;
+        put?: never;
+        /** End the session */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description done */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description error */
+                default: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/profiles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Staged profiles (sorted by name) */
         get: {
             parameters: {
                 query?: never;
@@ -1300,7 +1292,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["DeviceStatus"][];
+                        "application/json": components["schemas"]["Profile"][];
                     };
                 };
                 /** @description error */
@@ -1322,21 +1314,129 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/status/devices/{name}": {
+    "/oids/translate": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** One device */
-        get: {
+        get?: never;
+        put?: never;
+        /** Numeric OIDs to names, and names (IF-MIB::ifInOctets.3, ifInOctets) to numeric OIDs; at most 1000 in total */
+        post: {
             parameters: {
                 query?: never;
                 header?: never;
-                path: {
-                    name: string;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        names?: string[];
+                        oids?: string[];
+                    };
                 };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            names: {
+                                error?: string;
+                                name: string;
+                                modules?: string[];
+                                oid?: string;
+                            }[];
+                            oids: (components["schemas"]["OidInfo"] | null)[];
+                        };
+                    };
+                };
+                /** @description error */
+                default: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/config/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Replace the staged configuration (admin) */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["Config"];
+                };
+            };
+            responses: {
+                /** @description done */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description error */
+                default: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/oids": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Definitions whose name contains q (exact and prefix matches first) */
+        get: {
+            parameters: {
+                query: {
+                    q: string;
+                    limit?: number;
+                };
+                header?: never;
+                path?: never;
                 cookie?: never;
             };
             requestBody?: never;
@@ -1347,7 +1447,365 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["DeviceStatus"];
+                        "application/json": components["schemas"]["OidInfo"][];
+                    };
+                };
+                /** @description error */
+                default: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/mibs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** MIB modules: built-in (OTP) and uploaded, with compile status */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["MibModule"][];
+                    };
+                };
+                /** @description error */
+                default: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /** Upload MIB files (admin): each may hold several modules; modules of the same name are replaced, everything is compiled again */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        sources?: string[];
+                        source?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["MibUploadResult"];
+                    };
+                };
+                /** @description error */
+                default: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/config/revert": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Discard staged changes (admin) */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description done */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description error */
+                default: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The logged-in user */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Me"];
+                    };
+                };
+                /** @description error */
+                default: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/servers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Staged servers (sorted by name) */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Server"][];
+                    };
+                };
+                /** @description error */
+                default: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/config/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Activated versions, newest first */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Version"][];
+                    };
+                };
+                /** @description error */
+                default: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Log in; sets the session cookie */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        password: string;
+                        username: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Me"];
+                    };
+                };
+                /** @description error */
+                default: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/config/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Staged or active configuration for backup (secrets as envelopes) */
+        get: {
+            parameters: {
+                query?: {
+                    source?: "staged" | "active";
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Config"];
                     };
                 };
                 /** @description error */
@@ -1414,170 +1872,14 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/tools/snmp/get": {
+    "/mibs/{name}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get?: never;
-        put?: never;
-        /** GET through a configured, running device (at most max_varbinds OIDs) */
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": {
-                        device: string;
-                        oids: string[];
-                    };
-                };
-            };
-            responses: {
-                /** @description OK */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": {
-                            varbinds?: components["schemas"]["Varbind"][];
-                        };
-                    };
-                };
-                /** @description error */
-                default: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["Error"];
-                    };
-                };
-            };
-        };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tools/snmp/walk": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Walk a subtree through a configured, running device */
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": {
-                        /** @default 1000 */
-                        max?: number;
-                        device: string;
-                        oid: string;
-                    };
-                };
-            };
-            responses: {
-                /** @description OK */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": {
-                            varbinds?: components["schemas"]["Varbind"][];
-                            truncated?: boolean;
-                        };
-                    };
-                };
-                /** @description error */
-                default: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["Error"];
-                    };
-                };
-            };
-        };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/users": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** All users (admin) */
-        get: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description OK */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["User"][];
-                    };
-                };
-                /** @description error */
-                default: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["Error"];
-                    };
-                };
-            };
-        };
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/users/{name}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** One user (admin) */
+        /** One MIB module */
         get: {
             parameters: {
                 query?: never;
@@ -1595,7 +1897,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["User"];
+                        "application/json": components["schemas"]["MibModule"];
                     };
                 };
                 /** @description error */
@@ -1609,44 +1911,9 @@ export interface paths {
                 };
             };
         };
-        /** Create or update (admin); a password set for someone else must be changed on their next login */
-        put: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path: {
-                    name: string;
-                };
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": components["schemas"]["UserInput"];
-                };
-            };
-            responses: {
-                /** @description OK */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["User"];
-                    };
-                };
-                /** @description error */
-                default: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["Error"];
-                    };
-                };
-            };
-        };
+        put?: never;
         post?: never;
-        /** Delete (admin); not the last admin */
+        /** Delete an uploaded module (admin); modules importing it fail */
         delete: {
             parameters: {
                 query?: never;
@@ -1676,6 +1943,98 @@ export interface paths {
                 };
             };
         };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/mibs/{name}/source": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The source of a module (text/plain) */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    name: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": string;
+                    };
+                };
+                /** @description error */
+                default: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/devices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Staged devices (sorted by name) */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Device"][];
+                    };
+                };
+                /** @description error */
+                default: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -1884,8 +2243,10 @@ export interface components {
             trap_rules: {
                 name: string;
                 set?: number | string;
+                /** Format: oid */
                 take?: string;
                 instance?: {
+                    /** Format: oid */
                     oid: string;
                     /**
                      * @default suffix
@@ -1908,9 +2269,11 @@ export interface components {
                      * @enum {string}
                      */
                     op: "eq" | "ne";
+                    /** Format: oid */
                     oid: string;
                 }[];
                 confirm_get_after?: number;
+                /** Format: oid */
                 trap_oid: string;
             }[];
             /** @default [] */
@@ -1923,7 +2286,10 @@ export interface components {
                  */
                 scope: "device" | "instance";
                 description?: string;
-                /** @description numeric OID; instance datapoints end in .{index} */
+                /**
+                 * Format: oid-template
+                 * @description numeric OID; instance datapoints end in .{index}
+                 */
                 oid: string;
                 /** @default [] */
                 mappings: {
@@ -1976,6 +2342,7 @@ export interface components {
             /** @default {} */
             resolvers: {
                 [key: string]: {
+                    /** Format: oid */
                     column: string;
                 };
             };
@@ -2001,6 +2368,60 @@ export interface components {
             buffer_len: number;
             /** @description open connections */
             members: number;
+        };
+        MibModule: {
+            /** @description compiler errors */
+            messages?: {
+                line?: number;
+                message: string;
+            }[];
+            name: string;
+            size?: number;
+            /** @enum {string} */
+            status: "ok" | "pending" | "error" | "missing_imports" | "dependency_failed";
+            /** @description imports that are nowhere */
+            missing?: string[];
+            /**
+             * @description builtin: shipped with OTP, read-only
+             * @enum {string}
+             */
+            origin: "builtin" | "uploaded";
+            imports?: string[];
+            /** @description imports that failed */
+            dependencies?: string[];
+            /** @description indexed definitions */
+            objects: number;
+            /** @description Unix time in milliseconds */
+            uploaded_at?: number;
+            uploaded_by?: string;
+        };
+        /** @description the definition of the longest known prefix of oid; index is the rest */
+        OidInfo: {
+            index: string;
+            module: string;
+            name: string;
+            bits?: {
+                name: string;
+                bit: number;
+            }[];
+            /** @enum {string} */
+            kind: "node" | "scalar" | "table" | "row" | "column" | "notification";
+            oid: string;
+            syntax?: string;
+            base_oid: string;
+            base_type?: string;
+            enums?: {
+                name: string;
+                value: number;
+            }[];
+            units?: string;
+        };
+        OidDetail: components["schemas"]["OidInfo"] & {
+            access?: string;
+            description?: string;
+            range?: number[];
+            /** @description notification objects (OidInfo, or only oid) */
+            objects?: Record<string, never>[];
         };
         AuditEntry: {
             id: number;
@@ -2048,6 +2469,28 @@ export interface components {
             must_change_password: boolean;
             /** @enum {string} */
             role: "admin" | "viewer";
+        };
+        MibUploadResult: {
+            modules: components["schemas"]["MibModule"][];
+            /** @description built-in module names, not stored */
+            skipped: string[];
+        };
+        OidNode: {
+            path: {
+                name: string | null;
+                oid: string;
+            }[];
+            oid: string;
+            children: {
+                module?: string;
+                name: string | null;
+                kind?: string;
+                oid: string;
+                arc: number;
+                has_children: boolean;
+                syntax?: string;
+            }[];
+            def: components["schemas"]["OidDetail"] | null;
         };
         ServerStatus: {
             name: string;

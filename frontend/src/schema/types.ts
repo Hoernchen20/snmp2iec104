@@ -21,6 +21,8 @@ export interface JsonSchema {
   minLength?: number;
   maxLength?: number;
   pattern?: string;
+  /** "oid" / "oid-template": numeric OID fields, shown with their MIB names. */
+  format?: string;
   description?: string;
   writeOnly?: boolean;
   $ref?: string;

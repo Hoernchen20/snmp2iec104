@@ -1,0 +1,20 @@
+TEST-EXT-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE, Gauge32 FROM SNMPv2-SMI
+    testObjects FROM TEST-MIB;
+
+testExtMIB MODULE-IDENTITY
+    LAST-UPDATED "202601010000Z"
+    ORGANIZATION "snmp2iec104"
+    CONTACT-INFO "none"
+    DESCRIPTION "Extends TEST-MIB"
+    ::= { testObjects 9 }
+
+testTemperature OBJECT-TYPE
+    SYNTAX Gauge32
+    UNITS "0.1 degC"
+    MAX-ACCESS read-only
+    STATUS current
+    DESCRIPTION "Temperature"
+    ::= { testExtMIB 1 }
+END

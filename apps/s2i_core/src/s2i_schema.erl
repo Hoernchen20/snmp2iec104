@@ -830,8 +830,10 @@ js(password) -> #{type => string, minLength => 8, maxLength => 255, writeOnly =>
 js(host) -> #{type => string, description => <<"IPv4 address or host name">>};
 js(ip) -> #{type => string, description => <<"IP address">>};
 js(cidr) -> #{type => string, description => <<"address or prefix, e.g. 10.0.0.0/24">>};
-js(oid) -> #{type => string, pattern => <<"^\\.?[0-9]+(\\.[0-9]+)+$">>};
-js(oid_template) -> #{type => string, description => <<"numeric OID; instance datapoints end in .{index}">>};
+%% format: lets the UI show MIB names next to OID fields (docs/DESIGN.md §13)
+js(oid) -> #{type => string, format => <<"oid">>, pattern => <<"^\\.?[0-9]+(\\.[0-9]+)+$">>};
+js(oid_template) -> #{type => string, format => <<"oid-template">>,
+                      description => <<"numeric OID; instance datapoints end in .{index}">>};
 js(engine_id) -> #{type => string, description => <<"hex, 5 to 32 octets; colons allowed">>};
 js(boolean) -> #{type => boolean};
 js(number) -> #{type => number};

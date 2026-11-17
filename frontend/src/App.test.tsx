@@ -68,6 +68,8 @@ describe("App", () => {
     ["/debug?view=device&name=dev1", "Live debug", "IEC points of dev1"],
     ["/debug?view=log", "Live debug", "Minimum level"],
     ["/tools?device=dev1", "SNMP tools", "Walk"],
+    ["/mibs", "MIBs", "BROKEN-MIB"],
+    ["/mibs/browse?oid=1.3.6.1.2.1.2.2.1.8", "OID browser", "lowerLayerDown"],
     ["/users", "New user", "admin"],
     ["/account", "Account", "Change password"],
   ])("renders %s", async (route, first, second) => {

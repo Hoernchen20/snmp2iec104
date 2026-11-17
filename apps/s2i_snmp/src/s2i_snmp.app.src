@@ -1,7 +1,7 @@
 {application, s2i_snmp, [
     {description, "snmp2iec104: SNMP manager side (polling, traps)"},
     {vsn, "0.1.0"},
-    {registered, [s2i_snmp_sup, s2i_devices_sup, s2i_snmp_mgr]},
+    {registered, [s2i_snmp_sup, s2i_devices_sup, s2i_snmp_mgr, s2i_mibs]},
     {applications, [
         kernel,
         stdlib,
@@ -18,7 +18,9 @@
         {ip, "0.0.0.0"},
         {port, 162},
         %% hex snmpEngineID of the gateway; generated once into <dir>/engine_id if unset
-        {engine_id, undefined}
+        {engine_id, undefined},
+        %% compiled MIB cache (s2i_mibs); undefined: <dir>/mibs
+        {mib_dir, undefined}
     ]},
     {modules, []}
 ]}.

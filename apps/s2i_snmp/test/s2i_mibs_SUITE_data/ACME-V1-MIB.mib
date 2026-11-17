@@ -1,0 +1,8 @@
+ACME-V1-MIB DEFINITIONS ::= BEGIN
+IMPORTS enterprises, Counter FROM RFC1155-SMI
+        OBJECT-TYPE FROM RFC-1212
+        TRAP-TYPE FROM RFC-1215;
+acme OBJECT IDENTIFIER ::= { enterprises 4242 }
+acmeCount OBJECT-TYPE SYNTAX Counter ACCESS read-only STATUS mandatory DESCRIPTION "Count" ::= { acme 1 }
+acmeTrap TRAP-TYPE ENTERPRISE acme VARIABLES { acmeCount } DESCRIPTION "Acme trap" ::= 7
+END

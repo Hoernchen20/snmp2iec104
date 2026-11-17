@@ -30,6 +30,15 @@ plain_routes_test() ->
     ?assertEqual({ok, activate, admin}, s2i_web_rest:route(<<"POST">>, p(<<"config/activate">>))),
     ?assertEqual({ok, snmp_walk, viewer}, s2i_web_rest:route(<<"POST">>, p(<<"tools/snmp/walk">>))).
 
+mib_routes_test() ->
+    ?assertEqual({ok, mib_upload, admin}, s2i_web_rest:route(<<"POST">>, p(<<"mibs">>))),
+    ?assertEqual({ok, {mib_delete, <<"IF-MIB">>}, admin}, s2i_web_rest:route(<<"DELETE">>, p(<<"mibs/IF-MIB">>))),
+    ?assertEqual({ok, {mib_source, <<"IF-MIB">>}, viewer},
+                 s2i_web_rest:route(<<"GET">>, p(<<"mibs/IF-MIB/source">>))),
+    ?assertEqual({ok, oid_translate, viewer}, s2i_web_rest:route(<<"POST">>, p(<<"oids/translate">>))),
+    ?assertEqual({ok, {oid_node, <<"1.3.6.1">>}, viewer}, s2i_web_rest:route(<<"GET">>, p(<<"oids/1.3.6.1">>))),
+    ?assertEqual({ok, oid_search, viewer}, s2i_web_rest:route(<<"GET">>, p(<<"oids">>))).
+
 head_is_get_test() ->
     ?assertEqual({ok, {list, device}, viewer}, s2i_web_rest:route(<<"HEAD">>, p(<<"devices">>))).
 
@@ -56,7 +65,7 @@ mutations_need_admin_test() ->
                              M =:= <<"PUT">> orelse M =:= <<"DELETE">>],
     [?assertEqual(admin, A) || {_, _, A} <- Writes],
     [?assertEqual(admin, A) || {_, Ms} <- s2i_web_rest:routes(), {_, Act, A} <- Ms,
-                               lists:member(Act, [activate, revert, import, restore])].
+                               lists:member(Act, [activate, revert, import, restore, mib_upload])].
 
 access_test() ->
     Csrf = #{csrf => true},

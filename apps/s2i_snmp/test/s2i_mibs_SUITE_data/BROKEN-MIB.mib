@@ -1,0 +1,18 @@
+BROKEN-MIB DEFINITIONS ::= BEGIN
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE, enterprises FROM SNMPv2-SMI;
+
+brokenMIB MODULE-IDENTITY
+    LAST-UPDATED "202601010000Z"
+    ORGANIZATION "x"
+    CONTACT-INFO "x"
+    DESCRIPTION "x"
+    ::= { enterprises 99998 }
+
+brokenObject OBJECT-TYPE
+    SYNTAX NoSuchType
+    MAX-ACCESS read-only
+    STATUS current
+    DESCRIPTION "uses an unknown type"
+    ::= { brokenMIB 1 }
+END

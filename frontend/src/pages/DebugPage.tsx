@@ -18,6 +18,8 @@ import {
   type EventList,
   type SnmpValue,
 } from "../debug/model";
+import { OidName, ValueLabel, VarbindLines } from "../mib/Oid";
+import { oidText, useOidInfos } from "../mib/names";
 
 type View = "device" | "server" | "trace" | "traps" | "iec" | "log";
 
@@ -100,6 +102,7 @@ function DeviceValues({ name }: { name: string }) {
   const [s] = useTopic(`values:device:${name}`, deviceReducer, emptyDevice);
   const points = Object.values(s.points).sort((a, b) => a.server.localeCompare(b.server) || compareAddr(a, b));
   const oids = Object.values(s.oids).sort((a, b) => compareOid(a.oid, b.oid));
+  const lookup = useOidInfos(oids.map((o) => o.oid));
   return (
     <>
       {s.error ? <div className="alert error">{s.error}</div> : null}
@@ -158,10 +161,12 @@ function DeviceValues({ name }: { name: string }) {
           <tbody>
             {oids.map((o) => (
               <tr key={o.oid}>
-                <td className="mono">{o.oid}</td>
+                <td>
+                  <OidName oid={o.oid} info={lookup(o.oid) ?? null} numeric />
+                </td>
                 <td>{o.datapoints.join(", ")}</td>
                 <td className="mono" title={o.value.type}>
-                  {formatSnmp(o.value)}
+                  <ValueLabel info={lookup(o.oid)} value={o.value.value} text={formatSnmp(o.value)} />
                 </td>
                 <td>{o.source.replace(/_/g, " ")}</td>
                 <td className="num">{o.sent}</td>
@@ -275,7 +280,9 @@ function EventTable({
 }
 
 const vbText = (vbs: Ev[] | undefined) =>
-  (vbs ?? []).map((v) => `${v.oid} = ${formatSnmp(v as SnmpValue)}`).join("\n");
+  (vbs ?? []).map((v) => `${oidText(v.oid)} = ${formatSnmp(v as SnmpValue)}`).join("\n");
+
+const formatVb = (v: { oid: string }) => formatSnmp(v as unknown as SnmpValue);
 
 function Trace({ name }: { name: string }) {
   const [list, clear] = useTopic<EventList<Ev>>(`snmp:trace:${name}`, eventListReducer, emptyList);
@@ -303,7 +310,9 @@ function Trace({ name }: { name: string }) {
             </td>
             <td className="num">{e.req_id ?? ""}</td>
             <td>{traceWhat(e)}</td>
-            <td className="mono pre">{traceDetails(e)}</td>
+            <td className="mono">
+              <TraceDetails e={e} />
+            </td>
           </>
         )}
       />
@@ -322,9 +331,28 @@ function traceWhat(e: Ev): string {
 }
 
 function traceDetails(e: Ev): string {
-  if (e.dir === "request") return (e.oids ?? []).join("\n") + (e.error ? `\nerror: ${e.error}` : "");
+  if (e.dir === "request") return (e.oids ?? []).map(oidText).join("\n") + (e.error ? `\nerror: ${e.error}` : "");
   if (e.dir === "response") return vbText(e.varbinds);
   return String(e.reason ?? e.info ?? "");
+}
+
+function TraceDetails({ e }: { e: Ev }) {
+  const oids: string[] = e.dir === "request" ? (e.oids ?? []) : [];
+  const lookup = useOidInfos(oids);
+  if (e.dir === "request") {
+    return (
+      <>
+        {oids.map((o, i) => (
+          <div key={i}>
+            <OidName oid={o} info={lookup(o) ?? null} link={false} />
+          </div>
+        ))}
+        {e.error ? <div>error: {String(e.error)}</div> : null}
+      </>
+    );
+  }
+  if (e.dir === "response") return <VarbindLines varbinds={e.varbinds ?? []} format={formatVb} />;
+  return <span className="pre">{traceDetails(e)}</span>;
 }
 
 const traceText = (e: Ev) => `${traceWhat(e)} ${traceDetails(e)}`;
@@ -335,7 +363,7 @@ function Traps() {
     <EventTable
       list={list}
       clear={clear}
-      text={(e) => `${e.device ?? e.from} ${e.trap_oid} ${vbText(e.varbinds)}`}
+      text={(e) => `${e.device ?? e.from} ${e.trap_oid ? oidText(e.trap_oid) : ""} ${vbText(e.varbinds)}`}
       head={
         <tr>
           <th>Time</th>
@@ -349,7 +377,7 @@ function Traps() {
         <>
           <td>{formatTime(e.at)}</td>
           <td>{e.device ? <Link to={`/devices/${encodeURIComponent(e.device)}`}>{e.device}</Link> : <span className="badge warn">unknown {e.from}</span>}</td>
-          <td className="mono">{e.trap_oid ?? "—"}</td>
+          <td>{e.trap_oid ? <OidName oid={e.trap_oid} numeric /> : "—"}</td>
           <td>
             {(e.matched ?? []).length === 0 ? (
               <span className="badge muted">unmatched</span>
@@ -366,7 +394,9 @@ function Traps() {
               </span>
             ))}
           </td>
-          <td className="mono pre">{vbText(e.varbinds)}</td>
+          <td className="mono">
+            <VarbindLines varbinds={e.varbinds ?? []} format={formatVb} />
+          </td>
         </>
       )}
     />

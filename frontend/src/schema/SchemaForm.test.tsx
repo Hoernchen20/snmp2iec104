@@ -1,8 +1,9 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SchemaError } from "../api/client";
+import { resetOidNames } from "../mib/names";
 import { SchemaForm, parseChoice } from "./SchemaForm";
 import type { JsonSchema } from "./types";
 
@@ -110,6 +111,75 @@ describe("SchemaForm", () => {
     render(<Harness initial={base} readOnly />);
     expect(screen.getByDisplayValue("tcp")).toBeDisabled();
     expect(screen.getByDisplayValue("161")).toBeDisabled();
+  });
+});
+
+describe("OID fields", () => {
+  const oidSchema: JsonSchema = {
+    type: "object",
+    properties: { oid: { type: "string", format: "oid-template" } },
+  };
+  function OidHarness({ initial, spy }: { initial: string; spy: (v: unknown) => void }) {
+    const [v, setV] = useState<unknown>({ oid: initial });
+    return (
+      <SchemaForm
+        schema={oidSchema}
+        value={v}
+        onChange={(nv) => {
+          setV(nv);
+          spy(nv);
+        }}
+        errors={[]}
+      />
+    );
+  }
+  const info = {
+    oid: "1.3.6.1.2.1.2.2.1.8",
+    base_oid: "1.3.6.1.2.1.2.2.1.8",
+    index: "",
+    name: "ifOperStatus",
+    module: "IF-MIB",
+    kind: "column",
+    syntax: "INTEGER",
+    enums: [
+      { value: 1, name: "up" },
+      { value: 2, name: "down" },
+    ],
+  };
+
+  beforeEach(() => {
+    resetOidNames();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        const body = JSON.parse(String(init.body)) as { oids: string[]; names: string[] };
+        return new Response(
+          JSON.stringify({
+            oids: body.oids.map((o) => (o === info.oid ? info : null)),
+            names: body.names.map((n) => (n === "ifOperStatus" ? { name: n, oid: info.oid } : { name: n, error: "not_found" })),
+          }),
+        );
+      }),
+    );
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("shows the MIB name and values of a numeric OID", async () => {
+    render(<OidHarness initial="1.3.6.1.2.1.2.2.1.8.{index}" spy={() => {}} />);
+    expect(await screen.findByText("IF-MIB::ifOperStatus.{index}")).toBeInTheDocument();
+    expect(screen.getByText(/1 up, 2 down/)).toBeInTheDocument();
+  });
+
+  it("turns a typed name into the numeric OID", async () => {
+    const spy = vi.fn();
+    render(<OidHarness initial="ifOperStatus" spy={spy} />);
+    await userEvent.click(await screen.findByRole("button", { name: "use 1.3.6.1.2.1.2.2.1.8.{index}" }));
+    expect(spy).toHaveBeenLastCalledWith({ oid: "1.3.6.1.2.1.2.2.1.8.{index}" });
+  });
+
+  it("says when a name is unknown", async () => {
+    render(<OidHarness initial="nope" spy={() => {}} />);
+    expect(await screen.findByText(/unknown name/)).toBeInTheDocument();
   });
 });
 

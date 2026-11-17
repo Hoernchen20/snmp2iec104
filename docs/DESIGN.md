@@ -1,9 +1,9 @@
 # snmp2iec104 — Design
 
-Status: **phases 0–7 implemented** (config, expansion, IEC side, SNMP
-polling, traps/informs, REST API + auth, web UI + WebSocket debugging); the
-MIB library follows (§12, §13). Scope of v1: monitoring direction
-only, SNMP → IEC 60870-5-104.
+Status: **phases 0–8 implemented** (config, expansion, IEC side, SNMP
+polling, traps/informs, REST API + auth, web UI + WebSocket debugging, MIB
+library; §12, §13). Scope of v1: monitoring direction only, SNMP → IEC
+60870-5-104.
 
 ## 1. Scope and goals
 
@@ -33,7 +33,7 @@ history, clustering / multi-node.
 | Concern | Choice | OTP-native |
 |---|---|---|
 | SNMP manager, v1/v2c/v3, traps, informs | `snmp` app — `snmpm`, agents and USM users registered at runtime | yes |
-| MIB compilation (phase 2) | `snmpc` | yes |
+| MIB compilation (UI assist, §13) | `snmpc` | yes |
 | IEC 60870-5-104 server | `erl60870` (`iec60870` app) | — (own lib) |
 | Config + user storage | Mnesia, `disc_copies`, single node | yes |
 | JSON | OTP 27 `json` | yes |
@@ -60,7 +60,7 @@ apps/
   snmp2iec104/ application entry point; owns the root supervisor s2i_sup
   s2i_core/   config schema, validation, Mnesia store, profile expansion,
               route compiler, value transforms, trap matching, reconcile diff
-  s2i_snmp/   snmpm user, device subtrees, pollers, trap dispatch
+  s2i_snmp/   snmpm user, device subtrees, pollers, trap dispatch, MIB library
   s2i_iec/    reconciler over iec60870 servers, quality / comm-status points
   s2i_web/    cowboy: REST, auth, sessions, WebSocket, static React build
 frontend/     React source (not part of the release; built into s2i_web/priv)
@@ -93,7 +93,8 @@ s2i_sup                                 rest_for_one
 │   │   └── s2i_device  gen_server: agent/USM registration, instance
 │   │                   resolution, poll groups (drift-free schedule),
 │   │                   health (up | degraded | down), traps/informs
-│   └── s2i_snmp_mgr    reconciler: desired devices ↔ running s2i_device
+│   ├── s2i_snmp_mgr    reconciler: desired devices ↔ running s2i_device
+│   └── s2i_mibs        MIB library: snmpc compile + name index (§13)
 ├── s2i_debug_sup       one_for_all: pg scope s2i_debug_pg + s2i_debug
 │                       (ring buffers of the buffered topics, log handler)
 └── s2i_web_sup         cowboy listener(s), session table
@@ -398,6 +399,7 @@ spurious change).
 | `s2i_config_version` | ordered_set | `{Tab, Vsn, Meta, Config}`, immutable snapshots |
 | `s2i_audit` | ordered_set | `{Tab, Id, Entry}`, newest 10 000 kept |
 | `s2i_user` | set | web users `{Tab, Name, SchemaVsn, Map}` (§9.2); not part of versions/exports |
+| `s2i_mib` | set | uploaded MIB modules `{Tab, Name, SchemaVsn, Map}` (§13); not part of versions/exports |
 
 `SchemaVsn` makes later `mnesia:transform_table/3` migrations explicit; a
 table whose attributes differ from the code's layout fails startup loudly.
@@ -542,7 +544,7 @@ same path as above (sets last_trap_at); auto-reset timers, confirm GETs
 `servers`, `devices`, `profiles`, `users` (CRUD), `config/staged`,
 `config/validate`, `config/activate`, `config/export`, `config/import`,
 `config/audit`, `status` (devices, servers, groups), `tools/snmp/get`,
-`tools/snmp/walk`. An OpenAPI document is maintained alongside and used to
+`tools/snmp/walk`, `mibs` and `oids` (MIB library, §13). An OpenAPI document is maintained alongside and used to
 generate the TypeScript client types.
 
 As implemented (phase 6):
@@ -582,7 +584,7 @@ As implemented (phase 6):
   documented paths equal to the route table.
 - Errors: `{"error": Code, "errors": [#{path, error, detail}]}`; 400 bad
   request / JSON, 401, 403 (`forbidden`, `csrf`, `password_change_required`),
-  404, 405 (`allow` header), 409 (`no_changes`, `last_admin`), 413 (> 8 MB),
+  404, 405 (`allow` header), 409 (`no_changes`, `last_admin`, `builtin`), 413 (> 8 MB),
   422 (validation), 503 (device not running / registered), 504 (SNMP timeout).
 
 ### 9.2 Auth
@@ -688,6 +690,7 @@ As implemented (phase 7):
 | End to end | `snmpa` → gateway → test master, incl. linkDown race and device-down quality |
 | REST / WS | `httpc` against the whole gateway (`s2i_web_SUITE`); `gun` for the WebSocket (session, origin, every topic, close on logout) |
 | Debug topics | `s2i_debug_SUITE` (history, bounds, logger handler, publish while down); eunit for the WS protocol |
+| MIB library | eunit for splitting / imports / compile order / cache key (`s2i_mib_src`) and the index (`s2i_mib_index`); `s2i_mibs_SUITE` compiles real MIBs with `snmpc` (SMIv1 and v2, dependencies in any order, errors, built-ins, cache across restarts) |
 | Frontend | Vitest + React Testing Library: pure models (form logic, debug reducers, WebSocket client with fake sockets, config diff), components, and every page rendered against API responses recorded from a running gateway |
 
 `rebar3 check` alias: compile + eunit + xref + dialyzer (as in erl60870);
@@ -713,15 +716,75 @@ As implemented (phase 7):
 5. Traps/informs: varbind match, trap rules, ordering rule, confirm-GET
 6. REST API + auth (users, sessions, CSRF, OpenAPI, status, SNMP tools)
 7. React UI + WebSocket debugging
-8. MIB library (phase 2 feature, see §13)
+8. MIB library (§13)
 
-## 13. MIBs (deferred)
+## 13. MIBs
 
 Runtime works exclusively on numeric OIDs. A later MIB library adds upload →
 `snmpc` compile → name table for OID↔name display, OID browser, enum labels
 (assist building `enum` transforms) and trap names in the trap log. Compile
 failures (common with vendor MIBs) are reported and never block numeric
 configuration.
+
+As implemented (phase 8):
+
+- `s2i_mibs` (gen_server, last child of `s2i_snmp_sup`, so its restart
+  touches nothing else). Sources live in the Mnesia table `s2i_mib`; they
+  are not part of config versions or exports (re-upload the files to move
+  them). Uploads and deletes are audited (`mib_put`, `mib_delete`).
+- Upload: `POST /mibs` with `sources` (file texts). A file may hold several
+  modules (`s2i_mib_src:split/1`, comments and strings masked); a module
+  with the name of a stored one replaces it. Modules that `snmpc` builds in
+  (`SNMPv2-SMI`, `SNMPv2-TC`, `SNMPv2-CONF`, `RFC1155-SMI`, `RFC-1212`,
+  `RFC-1215`) or that ship compiled with OTP (`SNMPv2-MIB`, `RFC1213-MIB`,
+  `SNMP-FRAMEWORK-MIB`, …) are skipped and reported. The UI sends files in
+  batches below the 8 MB request limit.
+- Compile: imports are read from the source; `s2i_mib_src:order/2` sorts
+  the uploaded modules so every module comes after the uploaded ones it
+  imports (files can be uploaded in any order and across uploads). A module
+  is `missing_imports` (import found nowhere) or `dependency_failed` (an
+  imported module failed, or an import cycle) without being compiled; an
+  `snmpc` failure is `error` with the compiler's messages (captured through
+  a group leader, with line numbers). Each module is compiled in its own
+  process with a 60 s limit.
+- Cache: `mib_dir` (default `<dir>/mibs` of `s2i_snmp`) keeps `Name.mib`,
+  `Name.bin` and `Name.meta`; the cache key covers the compiler version, the
+  source and the keys of the uploaded imports, so a restart or an upload
+  recompiles only what changed (failures included). Files of modules that
+  are no longer stored are removed on start.
+- Index (`s2i_mib_index`): built from the compiled modules, the OTP MIBs
+  (except OTP's own and `STANDARD-MIB`) and the SMI roots; SNMPv1
+  `TRAP-TYPE`s appear under their SNMPv2 OID (enterprise.0.specific).
+  Where modules overlap, uploaded ones name the OID first, then SMIv2 ones
+  (`SNMPv2-MIB` before `RFC1213-MIB`). Two ETS tables (OIDs as an
+  `ordered_set`, so subtrees are key ranges; names), published in
+  `persistent_term` and replaced as a whole after each change: lookups run
+  in the caller and never wait for a compile.
+- REST: `GET /mibs` (status, objects, imports, compiler messages),
+  `GET|DELETE /mibs/{name}` (built-ins: 409 `builtin`),
+  `GET /mibs/{name}/source` (text/plain), `GET /oids?q=` (name search),
+  `GET /oids/{oid}` (node with definition, ancestors, children),
+  `POST /oids/translate` (`oids` → longest known prefix + index, syntax,
+  enums; `names` such as `IF-MIB::ifInOctets.3` → numeric; at most 1000).
+  Reading is `viewer`, uploading and deleting `admin`.
+- UI: a MIBs page (modules with the reason a module did not compile,
+  upload, OID browser with search, definition, values of enums and bits,
+  notification objects). OIDs are shown with their names (batched
+  `translate` requests, cached until the library changes) in the SNMP
+  tools, the device values, the SNMP trace and the trap log, with enum
+  labels for values (`down (2)`). OID fields of the entity forms
+  (`format: oid` / `oid-template` in the JSON schemas) show the name,
+  syntax and enum values of the entered OID, and a name typed instead can
+  be turned into the numeric OID (`.0` for scalars, `.{index}` for
+  columns in instance datapoints).
+- `snmpc` is strict: vendor and older IETF MIBs often fail (e.g. a table
+  `SEQUENCE` that does not match its columns, `TEXTUAL-CONVENTION` in an
+  SMIv1 module). Of the 328 files of a net-snmp installation, 239 modules
+  compile; the rest are reported with the compiler's message and their
+  dependents. Nothing at runtime depends on it.
+- `snmpc` turns every name in a MIB into an atom (atoms are never
+  collected); one more reason why uploading is admin-only. Module names
+  are checked to be ASN.1 identifiers before they become file names.
 
 ## 14. Decisions
 
@@ -730,7 +793,7 @@ configuration.
 | 1 | Routing granularity | per IEC server; all redundancy groups of a server see the same points |
 | 2 | Config storage | Mnesia (single node), access only via `s2i_config` |
 | 3 | Naming / mapping | Device → Datapoint → Mapping; profiles with IOA base/stride/offset |
-| 4 | OIDs vs MIBs | numeric OIDs at runtime; MIBs later, UI-assist only |
+| 4 | OIDs vs MIBs | numeric OIDs at runtime; MIBs UI-assist only (§13) |
 | 5 | Poll + trap | both on one datapoint; trap applied immediately, poll discarded if sent before last trap |
 | 6 | HTTP server | Cowboy (WebSocket); everything else OTP-native |
 | 7 | Frontend | React + TypeScript + Vite |

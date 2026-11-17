@@ -6,6 +6,10 @@ import type {
   EntityKind,
   EntityMap,
   Me,
+  MibModule,
+  MibUploadResult,
+  OidInfo,
+  OidNode,
   Status,
   User,
   UserInput,
@@ -14,6 +18,7 @@ import type {
   Version,
 } from "./types";
 import type { JsonSchema } from "../schema/types";
+import { resetOidNames } from "../mib/names";
 
 // --- session ------------------------------------------------------------------
 
@@ -241,5 +246,59 @@ export function useSnmpWalk() {
   return useMutation({
     mutationFn: (v: { device: string; oid: string; max: number }) =>
       post<{ varbinds: Varbind[]; truncated: boolean }>("tools/snmp/walk", v),
+  });
+}
+
+// --- MIB library -----------------------------------------------------------------------
+
+export function useMibs() {
+  return useQuery({ queryKey: ["mibs"], queryFn: () => get<MibModule[]>("mibs") });
+}
+
+/** After the library changed: module list, tree and every cached OID name. */
+function invalidateMibs(qc: ReturnType<typeof useQueryClient>) {
+  resetOidNames();
+  return Promise.all([
+    qc.invalidateQueries({ queryKey: ["mibs"] }),
+    qc.invalidateQueries({ queryKey: ["oid"] }),
+    qc.invalidateQueries({ queryKey: ["oid-search"] }),
+    qc.invalidateQueries({ queryKey: ["audit"] }),
+  ]);
+}
+
+/** Upload MIB files: one request per batch (the API takes at most 8 MB per request). */
+export function useUploadMibs() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (batches: string[][]) => {
+      const result: MibUploadResult = { modules: [], skipped: [] };
+      for (const sources of batches) {
+        const r = await post<MibUploadResult>("mibs", { sources });
+        result.modules.push(...r.modules);
+        result.skipped.push(...r.skipped);
+      }
+      return result;
+    },
+    onSettled: () => invalidateMibs(qc),
+  });
+}
+
+export function useDeleteMib() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => del(`mibs/${enc(name)}`),
+    onSuccess: () => invalidateMibs(qc),
+  });
+}
+
+export function useOidNode(oid: string) {
+  return useQuery({ queryKey: ["oid", oid], queryFn: () => get<OidNode>(`oids/${enc(oid)}`) });
+}
+
+export function useOidSearch(q: string) {
+  return useQuery({
+    queryKey: ["oid-search", q],
+    queryFn: () => get<OidInfo[]>(`oids?q=${enc(q)}&limit=100`),
+    enabled: q.trim().length >= 2,
   });
 }

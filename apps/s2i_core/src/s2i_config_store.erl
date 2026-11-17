@@ -8,6 +8,7 @@ Mnesia tables behind `s2i_config`. Single node, `disc_copies`.
 | `s2i_config_version` | ordered_set | activated snapshots: `{Tab, Vsn, Meta, Config}` (immutable) |
 | `s2i_audit` | ordered_set | `{Tab, Id, Entry}`, newest `?AUDIT_KEEP` entries |
 | `s2i_user` | set | web users `{Tab, Name, SchemaVsn, Map}` (see `s2i_users`) |
+| `s2i_mib` | set | uploaded MIB modules `{Tab, Name, SchemaVsn, Map}` (see `s2i_mibs`) |
 
 The functions below the "inside a transaction" marker must be called within
 `mnesia:transaction/1`.
@@ -25,7 +26,7 @@ The functions below the "inside a transaction" marker must be called within
 
 -spec tables() -> [atom()].
 tables() ->
-    [T || {_, T} <- ?ENTITY_TABLES] ++ [s2i_config_version, s2i_audit, s2i_user].
+    [T || {_, T} <- ?ENTITY_TABLES] ++ [s2i_config_version, s2i_audit, s2i_user, s2i_mib].
 
 -doc """
 Make sure Mnesia runs with a disc schema and all tables exist.
@@ -45,7 +46,8 @@ table_defs() ->
     [{T, set, [name, schema_vsn, data]} || {_, T} <- ?ENTITY_TABLES] ++
     [{s2i_config_version, ordered_set, [vsn, meta, config]},
      {s2i_audit, ordered_set, [id, entry]},
-     {s2i_user, set, [name, schema_vsn, data]}].
+     {s2i_user, set, [name, schema_vsn, data]},
+     {s2i_mib, set, [name, schema_vsn, data]}].
 
 ensure_disc_schema() ->
     %% Mnesia creates its directory but not missing parents (e.g. "data/mnesia").

@@ -14,6 +14,7 @@ export function Layout({ me, children }: { me: Me; children: ReactNode }) {
     ["/config", "Configuration"],
     ["/debug", "Live debug"],
     ["/tools", "SNMP tools"],
+    ["/mibs", "MIBs"],
     ...(me.role === "admin" ? ([["/users", "Users"]] as [string, string][]) : []),
   ];
   return (

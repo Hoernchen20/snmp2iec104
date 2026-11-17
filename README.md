@@ -3,10 +3,11 @@
 Gateway from SNMP (v1/v2c/v3, polling and traps) to IEC 60870-5-104, built on
 Erlang/OTP and [erl60870](https://github.com/Hoernchen20/erl60870).
 
-> **Status:** phase 7, web UI (React) and live debugging over WebSocket on top
-> of the REST API with users and roles, traps and informs, SNMP polling
-> (v1/v2c/v3) and the IEC 104 side. See [docs/DESIGN.md](docs/DESIGN.md) for
-> the architecture and the implementation phases.
+> **Status:** phase 8, MIB library (upload, compile, OID names in the UI) on
+> top of the web UI with live debugging, the REST API with users and roles,
+> traps and informs, SNMP polling (v1/v2c/v3) and the IEC 104 side. See
+> [docs/DESIGN.md](docs/DESIGN.md) for the architecture and the
+> implementation phases.
 
 ## Layout
 
@@ -14,7 +15,7 @@ Erlang/OTP and [erl60870](https://github.com/Hoernchen20/erl60870).
 |---|---|
 | `snmp2iec104` | application entry point, root supervisor `s2i_sup` |
 | `s2i_core` | config model, validation, transforms, routing (library) |
-| `s2i_snmp` | SNMP manager side: snmpm, one process per device (polling, traps) (library) |
+| `s2i_snmp` | SNMP manager side: snmpm, one process per device (polling, traps), MIB library (library) |
 | `s2i_iec` | IEC 104 server side on top of erl60870 (library) |
 | `s2i_web` | REST API, web UI, WebSocket debugging (library) |
 | `frontend/` | React + TypeScript source of the web UI, built into `apps/s2i_web/priv/www` |
@@ -68,9 +69,20 @@ npm run gen:api   # regenerate src/api/schema.d.ts after API changes (needs reba
 Pages: status (devices, IEC servers and their redundancy groups), devices /
 profiles / IEC servers (forms generated from the API schemas, or raw JSON),
 configuration (staged changes, validate, activate, versions and rollback,
-export / import, audit log), live debugging, SNMP GET / walk, users.
+export / import, audit log), live debugging, SNMP GET / walk, MIBs, users.
 
 Live debugging uses the WebSocket `/ws` (session cookie, same origin):
 values of a device (raw SNMP value → IEC point) or of an IEC server, the SNMP
 request/response trace of a device, received traps (also unmatched or from
 unknown agents), IEC connections and redundancy groups, and the gateway log.
+
+### MIBs
+
+The gateway works on numeric OIDs; MIBs only give them names in the UI. Upload
+MIB files on the MIBs page (or `POST /api/v1/mibs` with
+`{"sources": ["<file text>", ...]}`), in any order: each module is compiled
+with OTP's `snmpc` once the modules it imports are there. Modules that fail to
+compile are listed with the compiler's message. The MIBs that ship with OTP
+(`SNMPv2-MIB`, `RFC1213-MIB`, …) are built in. Compiled modules are cached in
+`data/snmp/mibs` (`s2i_snmp` `mib_dir`); the sources are stored in Mnesia but
+are not part of configuration exports.

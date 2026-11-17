@@ -576,3 +576,109 @@ details.item[open] > summary {
     grid-template-columns: 1fr;
   }
 }
+
+/* --- MIBs ------------------------------------------------------------------- */
+
+.oid a {
+  color: inherit;
+  text-decoration: underline dotted var(--muted);
+}
+
+.oid-input {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+}
+
+.oid-input .hint {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+tr.detail td {
+  background: var(--muted-bg);
+}
+
+.problems p {
+  margin: 4px 0;
+}
+
+.problems ul {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+
+.mib-browser {
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) 1fr;
+  gap: 24px;
+  align-items: start;
+  margin-top: 16px;
+}
+
+.mib-browser aside input {
+  width: 100%;
+}
+
+.mib-browser section {
+  min-width: 0;
+}
+
+@media (max-width: 760px) {
+  .mib-browser {
+    grid-template-columns: 1fr;
+  }
+}
+
+ul.search-results {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+ul.search-results li {
+  padding: 3px 0;
+  overflow-wrap: anywhere;
+}
+
+.breadcrumb {
+  overflow-wrap: anywhere;
+  margin-bottom: 12px;
+}
+
+dl.props {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 0 0 12px;
+}
+
+dl.props div {
+  display: contents;
+}
+
+dl.props dt {
+  color: var(--muted);
+}
+
+dl.props dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+p.description {
+  max-width: 80ch;
+}
+
+table.narrow {
+  width: auto;
+}

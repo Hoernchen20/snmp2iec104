@@ -16,6 +16,11 @@ export type DeviceStatus = S["DeviceStatus"];
 export type ServerStatus = S["ServerStatus"];
 export type GroupStatus = S["GroupStatus"];
 export type Varbind = S["Varbind"];
+export type MibModule = S["MibModule"];
+export type MibUploadResult = S["MibUploadResult"];
+export type OidInfo = S["OidInfo"];
+export type OidDetail = S["OidDetail"];
+export type OidNode = S["OidNode"];
 
 export interface Status {
   devices: DeviceStatus[];

@@ -23,6 +23,9 @@ unchanged keeps the secret.
 -define(AUDIT_MAX, 10000).
 -define(WALK_DEFAULT, 1000).
 -define(WALK_MAX, 10000).
+-define(SEARCH_DEFAULT, 50).
+-define(SEARCH_MAX, 500).
+-define(TRANSLATE_MAX, 1000).
 
 -spec cookie_name() -> binary().
 cookie_name() -> ?COOKIE.
@@ -125,6 +128,8 @@ body(Req0) ->
 
 respond({error, Code}, Req) -> error_reply(Code, [], Req);
 respond({error, Code, Errors}, Req) -> error_reply(Code, Errors, Req);
+respond({raw, Status, Type, Body}, Req) ->
+    cowboy_req:reply(Status, (headers())#{<<"content-type">> => Type}, Body, Req);
 respond({Status, Body}, Req) when is_integer(Status) -> reply(Status, Body, Req);
 respond({Status, Body, Req1}, _Req) when is_integer(Status) -> reply(Status, Body, Req1).
 
@@ -342,7 +347,77 @@ action(snmp_walk, #{body := #{<<"device">> := Device, <<"oid">> := Oid} = Body})
         {_, false} -> {error, invalid, [#{path => [max], error => out_of_range}]}
     end;
 action(snmp_walk, _Ctx) ->
-    bad_request([device, oid]).
+    bad_request([device, oid]);
+
+%% --- MIB library -----------------------------------------------------------------
+
+action(mib_list, _Ctx) ->
+    {200, s2i_mibs:list()};
+action(mib_upload, #{body := Body} = Ctx) ->
+    Sources = case Body of
+                  #{<<"sources">> := L} -> L;
+                  #{<<"source">> := B} -> [B];
+                  _ -> undefined
+              end,
+    case Sources of
+        undefined ->
+            bad_request([sources]);
+        _ ->
+            case s2i_mibs:put(Sources, actor(Ctx)) of
+                {ok, Result} -> {200, Result};
+                {error, Errors} -> {error, invalid, Errors}
+            end
+    end;
+action({mib_get, Name}, _Ctx) ->
+    case s2i_mibs:get(Name) of
+        {ok, Info} -> {200, Info};
+        Error -> Error
+    end;
+action({mib_delete, Name}, Ctx) ->
+    case s2i_mibs:delete(Name, actor(Ctx)) of
+        ok -> {204, none};
+        Error -> Error
+    end;
+action({mib_source, Name}, _Ctx) ->
+    case s2i_mibs:source(Name) of
+        {ok, Source} ->
+            Type = case unicode:characters_to_binary(Source) of
+                       Source -> <<"text/plain; charset=utf-8">>;
+                       _ -> <<"text/plain">>
+                   end,
+            {raw, 200, Type, Source};
+        Error ->
+            Error
+    end;
+action(oid_search, #{req := Req}) ->
+    case {qs(<<"q">>, Req, <<>>), int(qs(<<"limit">>, Req, integer_to_binary(?SEARCH_DEFAULT)))} of
+        {<<>>, _} ->
+            bad_request([q]);
+        {Q, {ok, Limit}} when Limit >= 1, Limit =< ?SEARCH_MAX ->
+            {200, [s2i_web_mib:info(D, []) || D <- s2i_mibs:search(Q, Limit)]};
+        _ ->
+            {error, invalid, [#{path => [limit], error => out_of_range}]}
+    end;
+action({oid_node, Text}, _Ctx) ->
+    case s2i_web_mib:parse_oid(Text) of
+        {ok, Oid} ->
+            {200, s2i_web_mib:node(Oid, s2i_mibs:children(Oid), fun s2i_mibs:lookup/1,
+                                   fun s2i_mibs:translate/1)};
+        error ->
+            {error, invalid, [#{path => [oid], error => invalid_format}]}
+    end;
+action(oid_translate, #{body := Body}) when is_map(Body) ->
+    Oids = maps:get(<<"oids">>, Body, []),
+    Names = maps:get(<<"names">>, Body, []),
+    case is_list(Oids) andalso is_list(Names) andalso length(Oids) + length(Names) =< ?TRANSLATE_MAX of
+        true ->
+            {200, #{oids => [translate_oid(O) || O <- Oids],
+                    names => [resolve_name(N) || N <- Names]}};
+        false ->
+            {error, invalid, [#{path => [], error => too_many_oids, detail => #{max => ?TRANSLATE_MAX}}]}
+    end;
+action(oid_translate, _Ctx) ->
+    {error, bad_request}.
 
 %%% ===========================================================================
 %%% Helpers
@@ -382,6 +457,26 @@ oids(Oids) ->
         [] -> {ok, [O || {_, {ok, O}} <- Parsed]};
         Errors -> {error, Errors}
     end.
+
+translate_oid(Text) ->
+    case s2i_web_mib:parse_oid(Text) of
+        {ok, Oid} ->
+            case s2i_mibs:translate(Oid) of
+                {ok, Def, Suffix} -> s2i_web_mib:info(Def, Suffix);
+                error -> null
+            end;
+        error ->
+            null
+    end.
+
+resolve_name(Name) when is_binary(Name) ->
+    case s2i_mibs:resolve(Name) of
+        {ok, Oid} -> #{name => Name, oid => s2i_web_json:oid(Oid)};
+        {error, {ambiguous, Modules}} -> #{name => Name, error => ambiguous, modules => Modules};
+        {error, Reason} -> #{name => Name, error => Reason}
+    end;
+resolve_name(Other) ->
+    #{name => Other, error => invalid}.
 
 snmp_result({ok, Vbs}) ->
     {200, #{varbinds => [s2i_web_json:varbind(V) || V <- Vbs]}};
