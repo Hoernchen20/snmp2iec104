@@ -18,7 +18,7 @@ a previous instance, so its view of what runs is always accurate.
 """.
 -behaviour(gen_server).
 
--export([start_link/0, child_spec/0, sync/0]).
+-export([start_link/0, child_spec/0, sync/0, status/0]).
 -export([init/1, handle_continue/2, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -define(RETRY_MS, 2000).
@@ -36,6 +36,11 @@ child_spec() ->
 sync() ->
     gen_server:call(?MODULE, sync, 30000).
 
+-doc "State of every configured server: `running` or `start_failed` (retried).".
+-spec status() -> #{binary() => running | start_failed}.
+status() ->
+    gen_server:call(?MODULE, status).
+
 %%% ===========================================================================
 %%% gen_server
 %%% ===========================================================================
@@ -45,7 +50,7 @@ init([]) ->
     process_flag(trap_exit, true),
     ok = s2i_config:subscribe(),
     _ = [iec60870:stop_server(N) || {{s2i, _} = N, _} <- iec60870:which_servers()],
-    {ok, #{applied => undefined, servers => #{}, scans => #{}, retry => undefined},
+    {ok, #{applied => undefined, servers => #{}, failed => [], scans => #{}, retry => undefined},
      {continue, reconcile}}.
 
 -spec handle_continue(reconcile, map()) -> {noreply, map()}.
@@ -55,6 +60,8 @@ handle_continue(reconcile, State) ->
 -spec handle_call(term(), gen_server:from(), map()) -> {reply, term(), map()}.
 handle_call(sync, _From, State) ->
     {reply, ok, maybe_reconcile(State)};
+handle_call(status, _From, #{servers := Running, failed := Failed} = State) ->
+    {reply, maps:merge(#{N => start_failed || N <- Failed}, #{N => running || N := _ <- Running}), State};
 handle_call(_Req, _From, State) ->
     {reply, {error, unknown_call}, State}.
 
@@ -113,7 +120,7 @@ reconcile(#{servers := Running} = State) ->
     _ = [s2i_iec:publish(S, [{A, s2i_live_seed(S, A)} || {S1, A, _} <- Add, S1 =:= S])
          || S <- maps:keys(Untouched)],
 
-    State1 = State#{applied := Vsn, servers := Running2,
+    State1 = State#{applied := Vsn, servers := Running2, failed := Failed,
                     scans := scans(Entities, Running2, maps:get(scans, State))},
     retry_later(Failed, State1).
 

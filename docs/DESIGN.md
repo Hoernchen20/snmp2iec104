@@ -1,7 +1,7 @@
 # snmp2iec104 — Design
 
-Status: **phases 0–5 implemented** (config, expansion, IEC side, SNMP
-polling, traps/informs); REST and UI follow (§12). Scope of v1: monitoring direction
+Status: **phases 0–6 implemented** (config, expansion, IEC side, SNMP
+polling, traps/informs, REST API + auth); the UI follows (§12). Scope of v1: monitoring direction
 only, SNMP → IEC 60870-5-104.
 
 ## 1. Scope and goals
@@ -395,7 +395,7 @@ spurious change).
 | `s2i_iec_server`, `s2i_profile`, `s2i_device` | set | staged entities `{Tab, Name, SchemaVsn, Map}` |
 | `s2i_config_version` | ordered_set | `{Tab, Vsn, Meta, Config}`, immutable snapshots |
 | `s2i_audit` | ordered_set | `{Tab, Id, Entry}`, newest 10 000 kept |
-| `s2i_user` | set | phase 6 |
+| `s2i_user` | set | web users `{Tab, Name, SchemaVsn, Map}` (§9.2); not part of versions/exports |
 
 `SchemaVsn` makes later `mnesia:transform_table/3` migrations explicit; a
 table whose attributes differ from the code's layout fails startup loudly.
@@ -543,6 +543,43 @@ same path as above (sets last_trap_at); auto-reset timers, confirm GETs
 `tools/snmp/walk`. An OpenAPI document is maintained alongside and used to
 generate the TypeScript client types.
 
+As implemented (phase 6):
+
+- One cowboy handler (`s2i_web_api`) for `/api/v1/[...]`; the route table
+  with the access level of every operation is pure data
+  (`s2i_web_rest:routes/0`). Listeners are ranch children of `s2i_web_sup`
+  (`s2i_web` env `http` / `https`; the default config binds HTTP to
+  localhost only).
+- Entities: `GET /{servers,devices,profiles}[/{name}]`, `PUT` = create or
+  replace (name in the body optional, must match the path), `DELETE`. `PUT`
+  runs the schema check (422 with the `s2i_schema` errors); references are
+  checked by `POST config/validate` (always 200: `valid`, `errors`,
+  `server_restarts` = servers the activation would restart, for the UI
+  warning, `s2i_iec_config:restarts/2`) and `config/activate`.
+- Versions: `config/active`, `config/versions[/{vsn}]`,
+  `POST config/versions/{vsn}/restore`, `POST config/revert`;
+  `config/export?source=staged|active`.
+- Secrets (§5.7a): entities are returned as stored, so communities and USM
+  passwords only appear as `enc:v1:` envelopes. That keeps them write-only
+  without a separate "unchanged" marker: a GET body sent back with `PUT`
+  keeps the secret; a plaintext value replaces it.
+- Status: devices of the active configuration with `s2i_device:status/1`
+  (health, counters, resolution), IEC servers with `running | start_failed`
+  (`s2i_iec_mgr:status/0`) and their point count. Connections and active
+  redundancy group members come with the debug topics (§9.3).
+- SNMP tools go through a configured, running device (`s2i_device:get/2`,
+  `walk/3`): the request uses its registration, so no credentials travel in
+  API requests. GET is limited to `max_varbinds` OIDs, walk to `max`
+  varbinds (default 1000, `truncated` flag); timeouts and retries are the
+  device's, results do not count for health.
+- `GET /api/v1/openapi.json` (public): OpenAPI 3.1; the entity schemas are
+  generated from the `s2i_schema` specs (`json_schema/1`), and a test keeps
+  the documented paths equal to the route table.
+- Errors: `{"error": Code, "errors": [#{path, error, detail}]}`; 400 bad
+  request / JSON, 401, 403 (`forbidden`, `csrf`, `password_change_required`),
+  404, 405 (`allow` header), 409 (`no_changes`, `last_admin`), 413 (> 8 MB),
+  422 (validation), 503 (device not running / registered), 504 (SNMP timeout).
+
 ### 9.2 Auth
 
 - Users in Mnesia: `username`, `pbkdf2-sha256` hash + salt + iterations,
@@ -553,6 +590,34 @@ generate the TypeScript client types.
 - CSRF: SameSite cookie + required custom header on mutating requests.
 - First start: bootstrap admin from release config / env, forced password change.
 - HTTPS via cowboy TLS listener (OTP `ssl`).
+
+As implemented (phase 6):
+
+- `s2i_password` (pure): PBKDF2-HMAC-SHA256, 16-byte salt, 32-byte hash,
+  constant-time compare; `s2i_core` `password_iterations` (default 600 000,
+  ≈ 0.5 s per login). Stored hashes with fewer iterations are renewed on
+  the next login; unknown user names cost a dummy derivation (no user
+  enumeration by timing). Passwords: 8–1024 bytes UTF-8.
+- `s2i_users`: the last admin can neither be deleted nor demoted; a password
+  set by someone else forces a change on the next login (unless
+  `must_change_password: false`). User changes go to the audit log
+  (`user_put`, `user_delete`, `password_change`; never password material).
+- Sessions (`s2i_web_session`): ETS keyed by SHA-256 of the token; idle 30
+  min, absolute 12 h (`s2i_web` `session_idle_timeout` / `session_max_age`).
+  Only the user name is stored; role and pending password change are read
+  per request, so role changes apply at once. Deleting a user or resetting
+  their password ends their sessions; changing the own password ends the
+  other sessions. Sessions do not survive a restart.
+- While a password change is pending, only `me`, `me/password` and `logout`
+  are allowed (403 `password_change_required`).
+- CSRF header: `X-Requested-With` (any value) on every method except
+  GET/HEAD, including login.
+- `Secure` is set on the cookie when the request came over HTTPS (a plain
+  HTTP listener is meant for localhost / reverse proxies).
+- Bootstrap admin (no users at all): name `admin_user` (default `admin`),
+  password from `$S2I_ADMIN_PASSWORD`, else `admin_password`, else a
+  random one written to `initial_password_file` (default
+  `data/initial_admin_password`, 0600) — never logged.
 
 ### 9.3 WebSocket debugging (`/ws`)
 
@@ -578,7 +643,7 @@ Ring buffers in `s2i_debug` give a new subscriber the recent history.
 | SNMP | common_test: OTP `snmpa` (v3, spike, traps) and a scripted v1/v2c agent (`s2i_fake_agent`: values, tables, silence, reboots) |
 | IEC | common_test with a minimal test master (APCI + `iec60870_asdu` codec: STARTDT, GI, receive spontaneous) |
 | End to end | `snmpa` → gateway → test master, incl. linkDown race and device-down quality |
-| REST / WS | `httpc` + `gun` |
+| REST / WS | `httpc` against the whole gateway (`s2i_web_SUITE`); `gun` for WS (phase 7) |
 | Frontend | Vitest + React Testing Library |
 
 `rebar3 check` alias: compile + eunit + xref + dialyzer (as in erl60870);
@@ -602,7 +667,7 @@ Ring buffers in `s2i_debug` give a new subscriber the recent history.
 4. SNMP polling: 4a snmpm spike, 4b v1/v2c, 4c v3/USM (incl. engine id
    discovery), device health
 5. Traps/informs: varbind match, trap rules, ordering rule, confirm-GET
-6. REST API + auth
+6. REST API + auth (users, sessions, CSRF, OpenAPI, status, SNMP tools)
 7. React UI + WebSocket debugging
 8. MIB library (phase 2 feature, see §13)
 

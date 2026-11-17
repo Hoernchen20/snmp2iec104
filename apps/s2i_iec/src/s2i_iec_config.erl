@@ -7,7 +7,7 @@ Fields that do not concern the library (`name`, `description`,
 whether a running server must be restarted.
 """.
 
--export([server/1, seed/1, name/1, ref/1]).
+-export([server/1, seed/1, name/1, ref/1, restarts/2]).
 
 -doc "Registry name of the erl60870 server for a configured server.".
 -spec name(binary()) -> {s2i, binary()}.
@@ -16,6 +16,15 @@ name(Server) -> {s2i, Server}.
 -doc "Server reference for the `iec60870_server` API.".
 -spec ref(binary()) -> {via, iec60870_registry, {s2i, binary()}}.
 ref(Server) -> {via, iec60870_registry, name(Server)}.
+
+-doc """
+Servers that activating `New` (`#{Name => Entity}`) over `Old` would restart,
+dropping their connections: present in both with a different
+`server/1` translation (§7; `description`, `background_scan` do not count).
+""".
+-spec restarts(#{binary() => map()}, #{binary() => map()}) -> [binary()].
+restarts(Old, New) ->
+    [N || N := E <- maps:iterator(New, ordered), #{N := O} <- [Old], server(O) =/= server(E)].
 
 -spec server(map()) -> map().
 server(#{name := Name, transport := Transport, common_addresses := Coas,

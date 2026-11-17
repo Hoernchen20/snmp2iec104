@@ -20,7 +20,7 @@ Errors are collected, not short-circuited: every problem is reported as
 Cross-entity checks (references, port conflicts) live in `s2i_validate`.
 """.
 
--export([normalize/2, kinds/0, iec_types/0, mapping_errors/1]).
+-export([normalize/2, kinds/0, iec_types/0, mapping_errors/1, json_schema/1]).
 -export_type([kind/0, path/0, error/0]).
 
 -type kind() :: server | device | profile.
@@ -59,6 +59,16 @@ normalize(Kind, Input) ->
 -doc "Consistency errors of a canonical mapping (type/transform/deadband).".
 -spec mapping_errors(map()) -> [{path(), atom()}].
 mapping_errors(Mapping) -> check_mapping(Mapping).
+
+-doc """
+JSON Schema (draft 2020-12 subset, as used by OpenAPI 3.1) of an entity's
+input, generated from the same spec as `normalize/2` so the REST
+description cannot drift. Cross-field rules (object checks) are not
+expressible and only described by the error codes `normalize/2` returns.
+""".
+-spec json_schema(kind()) -> map().
+json_schema(Kind) ->
+    js(spec(Kind)).
 
 %%% ===========================================================================
 %%% Entity specs
@@ -803,3 +813,58 @@ err(RevPath, Code) ->
 
 err(RevPath, Suffix, Code) ->
     {error, [#{path => lists:reverse(RevPath) ++ Suffix, error => Code}]}.
+
+%%% ===========================================================================
+%%% JSON Schema
+%%% ===========================================================================
+
+js(name) -> #{type => string, pattern => <<?NAME_RE>>};
+js(dp_name) -> #{type => string, minLength => 1, maxLength => 128,
+                 description => <<"datapoint name; may contain {slot}">>};
+js(string) -> #{type => string, minLength => 1, maxLength => 255};
+js(text) -> #{type => string, maxLength => 1000};
+js(secret) -> #{type => string, minLength => 1, maxLength => 255, writeOnly => true,
+                description => <<"plaintext on write; read back as an enc:v1 envelope">>};
+js(password) -> #{type => string, minLength => 8, maxLength => 255, writeOnly => true,
+                  description => <<"plaintext on write; read back as an enc:v1 envelope">>};
+js(host) -> #{type => string, description => <<"IPv4 address or host name">>};
+js(ip) -> #{type => string, description => <<"IP address">>};
+js(cidr) -> #{type => string, description => <<"address or prefix, e.g. 10.0.0.0/24">>};
+js(oid) -> #{type => string, pattern => <<"^\\.?[0-9]+(\\.[0-9]+)+$">>};
+js(oid_template) -> #{type => string, description => <<"numeric OID; instance datapoints end in .{index}">>};
+js(engine_id) -> #{type => string, description => <<"hex, 5 to 32 octets; colons allowed">>};
+js(boolean) -> #{type => boolean};
+js(number) -> #{type => number};
+js({number, Min}) -> #{type => number, minimum => Min};
+js({int, Min, Max}) -> #{type => integer, minimum => Min, maximum => Max};
+js({enum, Values}) -> #{type => string, enum => Values};
+js({one_of, Specs}) -> #{oneOf => [js(S) || S <- Specs]};
+js({list, Spec, Opts}) ->
+    maps:merge(#{type => array, items => js(Spec)},
+               maps:from_list([{minItems, M} || #{min := M} <- [Opts]]
+                              ++ [{uniqueItems, true} || #{unique := true} <- [Opts]]));
+js({map_of, KeySpec, Spec, Opts}) ->
+    Keys = case KeySpec of
+               name -> #{pattern => <<?NAME_RE>>};
+               int_key -> #{pattern => <<"^-?[0-9]+$">>}
+           end,
+    maps:merge(#{type => object, propertyNames => Keys, additionalProperties => js(Spec)},
+               maps:from_list([{minProperties, M} || #{min := M} <- [Opts]]));
+js({object, Fields, _Checks}) ->
+    js_object(Fields);
+js({union, Tag, Variants}) ->
+    #{oneOf => [js_object([{Tag, {const, T}, required} | Fields])
+                || T := {Fields, _} <- maps:iterator(Variants, ordered)],
+      discriminator => #{propertyName => Tag}};
+js({const, V}) -> #{type => string, const => V}.
+
+js_object(Fields) ->
+    Props = maps:from_list([{K, js_field(S, Presence)} || {K, S, Presence} <- Fields]),
+    Base = #{type => object, properties => Props, additionalProperties => false},
+    case [K || {K, _, required} <- Fields] of
+        [] -> Base;
+        Required -> Base#{required => Required}
+    end.
+
+js_field(Spec, {default, D}) -> maps:put(default, D, js(Spec));
+js_field(Spec, _Presence) -> js(Spec).

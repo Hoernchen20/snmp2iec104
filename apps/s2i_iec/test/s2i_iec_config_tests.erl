@@ -57,3 +57,13 @@ seed_is_invalid_test_() ->
 
 name_test() ->
     ?assertEqual({s2i, <<"scada1">>}, s2i_iec_config:name(<<"scada1">>)).
+
+restarts_test() ->
+    A = server(#{}),
+    Named = fun(N, S) -> S#{name := N} end,
+    Old = #{<<"a">> => A, <<"b">> => Named(<<"b">>, A), <<"c">> => Named(<<"c">>, A)},
+    New = #{<<"a">> => A#{description => <<"only text">>, background_scan => 60000},
+            <<"b">> => Named(<<"b">>, server(#{transport => #{kind => tcp, port => 2405}})),
+            <<"d">> => Named(<<"d">>, A)},
+    %% a: no restart for description/background scan; c removed, d new: no restart
+    ?assertEqual([<<"b">>], s2i_iec_config:restarts(Old, New)).

@@ -41,16 +41,22 @@ SNMPv3: the USM user is registered under the agent's engine id (polling,
 traps) and under the gateway's engine id (informs, where the gateway is the
 authoritative engine). Devices that share a user name must use the same
 passwords for informs: the last registration wins.
+
+Tools (REST, §9.1): `get/2` and `walk/3` send one-off requests through the
+device's registration, so no secrets have to be supplied by the caller.
+They use the device's timeout and retries and do not count for health.
 """.
 -behaviour(gen_server).
 
--export([start_link/2, child_spec/2, status/1]).
+-export([start_link/2, child_spec/2, status/1, get/2, walk/3]).
 -export([init/1, handle_continue/2, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -define(RETRY_MS, 10000).
 -define(BULK, 25).
 
 -type spec() :: #{device := map(), profile := map(), expansion := s2i_expand:expansion()}.
+-type varbind() :: tuple().                     % snmpm #varbind{}
+-type tool_error() :: not_running | not_registered | too_many_oids | timeout | term().
 
 -spec child_spec(binary(), spec()) -> supervisor:child_spec().
 child_spec(Name, Spec) ->
@@ -64,9 +70,38 @@ start_link(Name, Spec) ->
 -doc "Health and counters of a running device.".
 -spec status(binary()) -> {ok, map()} | {error, not_running}.
 status(Name) ->
+    case pid(Name) of
+        {ok, Pid} -> {ok, gen_server:call(Pid, status)};
+        Error -> Error
+    end.
+
+-doc "One GET of `Oids` (at most `max_varbinds`); the varbinds as snmpm returns them.".
+-spec get(binary(), [[non_neg_integer()]]) -> {ok, [varbind()]} | {error, tool_error()}.
+get(Name, Oids) ->
+    tool_call(Name, {tool_get, Oids}).
+
+-doc "Walk the subtree `Root`, stopping after `Max` varbinds (`truncated`).".
+-spec walk(binary(), [non_neg_integer()], pos_integer()) ->
+          {ok, [varbind()], complete | truncated} | {error, tool_error()}.
+walk(Name, Root, Max) ->
+    tool_call(Name, {tool_walk, Root, Max}).
+
+tool_call(Name, Req) ->
+    case pid(Name) of
+        {ok, Pid} ->
+            try
+                gen_server:call(Pid, Req, 120000)
+            catch
+                exit:{timeout, _} -> {error, timeout}
+            end;
+        Error ->
+            Error
+    end.
+
+pid(Name) ->
     case [Pid || {Id, Pid, _, _} <- supervisor:which_children(s2i_devices_sup),
                  Id =:= Name, is_pid(Pid)] of
-        [Pid] -> {ok, gen_server:call(Pid, status)};
+        [Pid] -> {ok, Pid};
         [] -> {error, not_running}
     end.
 
@@ -94,10 +129,22 @@ handle_continue(register, State) ->
     {noreply, register(State)}.
 
 handle_call(status, _From, State) ->
-    Status = maps:with([health, failures, overruns, cycles, last_ok, error, resolved, traps, unmatched],
-                       State),
+    Status = maps:with([health, failures, overruns, cycles, last_ok, error, resolved, traps, unmatched,
+                        registered], State),
     Unresolved = [Id || #{id := Id} <- maps:get(unresolved, maps:get(routes, State))],
     {reply, Status#{unresolved => Unresolved}, State};
+handle_call({tool_get, _}, _From, #{registered := false} = State) ->
+    {reply, {error, not_registered}, State};
+handle_call({tool_get, Oids}, _From, #{device := #{max_varbinds := Max}} = State)
+  when length(Oids) > Max ->
+    {reply, {error, too_many_oids}, State};
+handle_call({tool_get, Oids}, From, State) ->
+    {noreply, send({tool_get, From}, Oids, 0, State)};
+handle_call({tool_walk, _, _}, _From, #{registered := false} = State) ->
+    {reply, {error, not_registered}, State};
+handle_call({tool_walk, Root, Max}, From, State) ->
+    {noreply, send({tool_walk, #{from => From, root => Root, max => Max, acc => [], n => 0}},
+                   [Root], 0, State)};
 handle_call(_Req, _From, State) ->
     {reply, {error, unknown_call}, State}.
 
@@ -293,9 +340,12 @@ send(Kind, Oids, Attempt, Reported, #{user := User, target := Target, reqs := Re
                                       device := #{timeout := Timeout, snmp := #{version := Vsn}}} = State) ->
     Opts = [{timeout, Timeout + 1000}],         % snmpm's own clean-up only
     Result = case Kind of
-                 {walk, _} when Vsn =:= v1 -> snmpm:async_get_next2(User, Target, Oids, Opts);
-                 {walk, _} -> snmpm:async_get_bulk2(User, Target, 0, ?BULK, Oids, Opts);
-                 _ -> snmpm:async_get2(User, Target, Oids, Opts)  % poll, once
+                 {W, _} when (W =:= walk orelse W =:= tool_walk), Vsn =:= v1 ->
+                     snmpm:async_get_next2(User, Target, Oids, Opts);
+                 {W, _} when W =:= walk; W =:= tool_walk ->
+                     snmpm:async_get_bulk2(User, Target, 0, ?BULK, Oids, Opts);
+                 _ ->
+                     snmpm:async_get2(User, Target, Oids, Opts)  % poll, once, tool_get
              end,
     Req = #{kind => Kind, oids => Oids, attempt => Attempt, reported => Reported, sent_at => now_ms()},
     case Result of
@@ -330,7 +380,13 @@ failed(#{kind := once, oids := Oids}, Reason, State) ->
     State;
 failed(#{kind := {walk, R}}, Reason, State) ->
     logger:warning("SNMP walk of resolver ~ts failed: ~p", [R, Reason]),
-    State#{walk := undefined, resolve := wanted}.
+    State#{walk := undefined, resolve := wanted};
+failed(#{kind := {tool_get, From}}, Reason, State) ->
+    gen_server:reply(From, {error, Reason}),
+    State;
+failed(#{kind := {tool_walk, #{from := From}}}, Reason, State) ->
+    gen_server:reply(From, {error, Reason}),
+    State.
 
 response(#{kind := {poll, G}} = Req, Resp, State) ->
     poll_response(G, Req, Resp, State);
@@ -340,6 +396,41 @@ response(#{kind := once, sent_at := SentAt}, {noError, _, Vbs}, State) ->
     apply_varbinds(Vbs, SentAt, State);
 response(#{kind := once, oids := Oids}, {Error, _, _}, State) ->
     logger:debug("SNMP GET of ~p answered with ~p", [Oids, Error]),
+    State;
+response(#{kind := {tool_get, From}}, {noError, _, Vbs}, State) ->
+    gen_server:reply(From, {ok, Vbs}),
+    State;
+response(#{kind := {tool_get, From}}, {Error, Idx, _}, State) ->
+    gen_server:reply(From, {error, {Error, Idx}}),
+    State;
+response(#{kind := {tool_walk, W}}, Resp, State) ->
+    tool_walk_response(W, Resp, State).
+
+%% Same end conditions as the resolver walk: a varbind outside the subtree,
+%% endOfMibView ('NULL'), or noSuchName on SNMPv1.
+tool_walk_response(#{from := From, root := Root, max := Max, acc := Acc, n := N} = W,
+                   {noError, _, Vbs}, State) ->
+    In = lists:takewhile(fun({varbind, Oid, Type, _, _}) -> lists:prefix(Root, Oid) andalso Type =/= 'NULL' end,
+                         Vbs),
+    Taken = lists:sublist(In, Max - N),
+    Acc1 = lists:reverse(Taken, Acc),
+    N1 = N + length(Taken),
+    if
+        N1 >= Max, In =/= [] ->
+            gen_server:reply(From, {ok, lists:reverse(Acc1), truncated}),
+            State;
+        length(In) =:= length(Vbs), In =/= [] ->
+            {varbind, Last, _, _, _} = lists:last(In),
+            send({tool_walk, W#{acc := Acc1, n := N1}}, [Last], 0, State);
+        true ->
+            gen_server:reply(From, {ok, lists:reverse(Acc1), complete}),
+            State
+    end;
+tool_walk_response(#{from := From, acc := Acc}, {noSuchName, _, _}, State) ->
+    gen_server:reply(From, {ok, lists:reverse(Acc), complete}),
+    State;
+tool_walk_response(#{from := From}, {Error, Idx, _}, State) ->
+    gen_server:reply(From, {error, {Error, Idx}}),
     State.
 
 %%% ===========================================================================
@@ -515,14 +606,14 @@ start_resolve(#{resolvers := Rs} = State) when map_size(Rs) =:= 0 ->
     State#{resolve := idle};
 start_resolve(#{walk := undefined, registered := true, resolvers := Rs} = State) ->
     [R | Rest] = maps:keys(Rs),
-    walk(R, maps:get(R, Rs), State#{walk := #{todo => Rest, rows => [], acc => #{}}, resolve := running});
+    walk_resolver(R, maps:get(R, Rs), State#{walk := #{todo => Rest, rows => [], acc => #{}}, resolve := running});
 start_resolve(#{registered := true} = State) ->
     %% a walk is running: walk again when it is done
     State#{resolve := wanted};
 start_resolve(State) ->
     State.
 
-walk(R, From, State) ->
+walk_resolver(R, From, State) ->
     send({walk, R}, [From], 0, State).
 
 walk_response(R, _Req, {noError, _, Vbs}, #{resolvers := Rs, walk := #{rows := Rows} = W} = State) ->
@@ -538,7 +629,7 @@ walk_response(R, _Req, {noError, _, Vbs}, #{resolvers := Rs, walk := #{rows := R
                    end, {[], false}, Vbs),
     W1 = W#{rows := lists:reverse(In) ++ Rows},
     case {Done, In} of
-        {false, [{Last, _} | _]} -> walk(R, Last, State#{walk := W1});
+        {false, [{Last, _} | _]} -> walk_resolver(R, Last, State#{walk := W1});
         _ -> walk_done(R, State#{walk := W1})
     end;
 walk_response(R, _Req, {noSuchName, _, _}, State) ->
@@ -555,7 +646,7 @@ walk_done(R, #{resolvers := Rs, walk := #{todo := Todo, rows := Rows, acc := Acc
     Acc1 = Acc#{R => Map},
     case Todo of
         [Next | Rest] ->
-            walk(Next, maps:get(Next, Rs), State#{walk := #{todo => Rest, rows => [], acc => Acc1}});
+            walk_resolver(Next, maps:get(Next, Rs), State#{walk := #{todo => Rest, rows => [], acc => Acc1}});
         [] ->
             resolved(Acc1, State#{walk := undefined})
     end.

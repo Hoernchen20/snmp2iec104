@@ -501,3 +501,29 @@ trap_rule_references_test() ->
                       with_rules([R#{trap_oid => <<"linkDown">>}]))),
     ?assert(has_error([trap_rules, 0, auto_reset, delay], out_of_range, profile,
                       with_rules([R#{auto_reset => #{delay => 10, value => 1}}]))).
+
+%%% JSON Schema
+
+json_schema_encodes_for_every_kind_test() ->
+    [?assert(is_map(json:decode(iolist_to_binary(json:encode(s2i_schema:json_schema(K))))))
+     || K <- s2i_schema:kinds()].
+
+json_schema_required_and_defaults_test() ->
+    #{type := object, properties := Props, required := Req, additionalProperties := false} =
+        s2i_schema:json_schema(device),
+    ?assertEqual(lists:sort([name, host, snmp, profile, ioa_base]), lists:sort(Req)),
+    ?assertMatch(#{type := integer, minimum := 1, maximum := 65535, default := 161}, maps:get(port, Props)),
+    ?assertMatch(#{type := boolean, default := true}, maps:get(enabled, Props)).
+
+json_schema_union_test() ->
+    #{properties := #{snmp := #{oneOf := Variants, discriminator := #{propertyName := version}}}} =
+        s2i_schema:json_schema(device),
+    ?assertEqual([v1, v2c, v3], [V || #{properties := #{version := #{const := V}}} <- Variants]),
+    [V3] = [V || #{properties := #{version := #{const := v3}}} = V <- Variants],
+    ?assertMatch(#{auth_password := #{writeOnly := true}}, maps:get(properties, V3)).
+
+json_schema_matches_normalize_fields_test() ->
+    %% every property the schema lists is accepted by normalize/2 (no unknown_field)
+    #{properties := Props} = s2i_schema:json_schema(server),
+    {error, Errors} = s2i_schema:normalize(server, maps:from_keys(maps:keys(Props), <<"x">>)),
+    ?assertEqual([], [E || #{error := unknown_field} = E <- Errors]).

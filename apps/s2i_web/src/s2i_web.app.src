@@ -1,13 +1,24 @@
 {application, s2i_web, [
     {description, "snmp2iec104: REST API, web UI, WebSocket debugging"},
     {vsn, "0.1.0"},
-    {registered, [s2i_web_sup]},
+    {registered, [s2i_web_sup, s2i_web_session]},
     {applications, [
         kernel,
         stdlib,
+        crypto,
+        ssl,
         cowboy,
-        s2i_core
+        s2i_core,
+        s2i_iec,
+        s2i_snmp
     ]},
-    {env, []},
+    {env, [
+        %% listeners: {http, [{ip, "127.0.0.1"}, {port, 8080}]},
+        %%            {https, [{ip, _}, {port, 8443}, {certfile, _}, {keyfile, _}]}
+        {admin_user, "admin"},
+        {initial_password_file, "data/initial_admin_password"},
+        {session_idle_timeout, 1800000},
+        {session_max_age, 43200000}
+    ]},
     {modules, []}
 ]}.
