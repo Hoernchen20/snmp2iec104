@@ -157,10 +157,15 @@ handle_info({timeout, _, {tick, G}}, State) ->
     {noreply, tick(G, State)};
 handle_info({timeout, _, {req_timeout, ReqId}}, #{reqs := Reqs} = State) ->
     case maps:take(ReqId, Reqs) of
-        {Req, Reqs1} -> {noreply, retry(Req, timeout, State#{reqs := Reqs1})};
-        error -> {noreply, State}
+        {Req, Reqs1} ->
+            trace(#{dir => timeout, req_id => ReqId}, State),
+            {noreply, retry(Req, timeout, State#{reqs := Reqs1})};
+        error ->
+            {noreply, State}
     end;
-handle_info({snmp_pdu, ReqId, Resp}, #{reqs := Reqs} = State) ->
+handle_info({snmp_pdu, ReqId, {Status, Index, Vbs} = Resp}, #{reqs := Reqs} = State) ->
+    trace(#{dir => response, req_id => ReqId, error_status => Status, error_index => Index,
+            varbinds => Vbs, late => not is_map_key(ReqId, Reqs)}, State),
     case maps:take(ReqId, Reqs) of
         {#{timer := T} = Req, Reqs1} ->
             _ = erlang:cancel_timer(T),
@@ -169,6 +174,7 @@ handle_info({snmp_pdu, ReqId, Resp}, #{reqs := Reqs} = State) ->
             {noreply, State}                    % late answer to a retried request
     end;
 handle_info({snmp_error, ReqId, Reason}, #{reqs := Reqs} = State) ->
+    trace(#{dir => error, req_id => ReqId, reason => Reason}, State),
     case maps:take(ReqId, Reqs) of
         {#{timer := T} = Req, Reqs1} ->
             _ = erlang:cancel_timer(T),
@@ -176,7 +182,8 @@ handle_info({snmp_error, ReqId, Reason}, #{reqs := Reqs} = State) ->
         error ->
             {noreply, State}
     end;
-handle_info({snmp_report, _Info}, State) ->
+handle_info({snmp_report, Info}, State) ->
+    trace(#{dir => report, info => Info}, State),
     {noreply, resend_after_report(State)};
 handle_info({snmp_trap, Info}, State) ->
     {noreply, trap(Info, State)};
@@ -186,7 +193,8 @@ handle_info({snmp_trap_from, _Addr, Info}, State) ->
     {noreply, trap(Info, State)};
 handle_info({timeout, Ref, {auto_reset, Oid, Value}}, #{resets := Resets} = State) ->
     case Resets of
-        #{Oid := Ref} -> {noreply, trap_values([{Oid, Value}], State#{resets := maps:remove(Oid, Resets)})};
+        #{Oid := Ref} -> {noreply, trap_values([{Oid, Value}], auto_reset,
+                                               State#{resets := maps:remove(Oid, Resets)})};
         _ -> {noreply, State}
     end;
 handle_info({timeout, _, {get_once, Oids}}, State) ->
@@ -339,15 +347,20 @@ send(Kind, Oids, Attempt, State) ->
 send(Kind, Oids, Attempt, Reported, #{user := User, target := Target, reqs := Reqs,
                                       device := #{timeout := Timeout, snmp := #{version := Vsn}}} = State) ->
     Opts = [{timeout, Timeout + 1000}],         % snmpm's own clean-up only
-    Result = case Kind of
-                 {W, _} when (W =:= walk orelse W =:= tool_walk), Vsn =:= v1 ->
-                     snmpm:async_get_next2(User, Target, Oids, Opts);
-                 {W, _} when W =:= walk; W =:= tool_walk ->
-                     snmpm:async_get_bulk2(User, Target, 0, ?BULK, Oids, Opts);
-                 _ ->
-                     snmpm:async_get2(User, Target, Oids, Opts)  % poll, once, tool_get
-             end,
+    {Op, Result} = case Kind of
+                       {W, _} when (W =:= walk orelse W =:= tool_walk), Vsn =:= v1 ->
+                           {get_next, snmpm:async_get_next2(User, Target, Oids, Opts)};
+                       {W, _} when W =:= walk; W =:= tool_walk ->
+                           {get_bulk, snmpm:async_get_bulk2(User, Target, 0, ?BULK, Oids, Opts)};
+                       _ ->
+                           {get, snmpm:async_get2(User, Target, Oids, Opts)}  % poll, once, tool_get
+                   end,
     Req = #{kind => Kind, oids => Oids, attempt => Attempt, reported => Reported, sent_at => now_ms()},
+    trace(maps:merge(#{dir => request, op => Op, purpose => purpose(Kind), oids => Oids, attempt => Attempt},
+                     case Result of
+                         {ok, Id} -> #{req_id => Id};
+                         {error, Why} -> #{error => Why}
+                     end), State),
     case Result of
         {ok, ReqId} ->
             T = erlang:start_timer(Timeout, self(), {req_timeout, ReqId}),
@@ -466,22 +479,55 @@ apply_values(Values, SentAt, State0) ->
     #{trap_at := TrapAt} = State,
     %% ordering rule: a request sent before the last trap of a datapoint
     %% carries an older state than the trap
-    publish_values([V || {Oid, _} = V <- Values, s2i_trap_match:poll_applies(Oid, SentAt, TrapAt)], State).
+    publish_values([V || {Oid, _} = V <- Values, s2i_trap_match:poll_applies(Oid, SentAt, TrapAt)],
+                   poll, State).
 
-publish_values(Values, #{routes := #{routes := Routes}, states := States} = State) ->
+%% Source (poll | trap | auto_reset) is only for the debug topic.
+publish_values(Values, Source, #{routes := #{routes := Routes}, states := States} = State) ->
     Ctx = #{now => now_ms(), ts => os:system_time(millisecond)},
-    {Writes, States1} =
-        lists:foldl(fun({Oid, V}, {Ws, Sts}) ->
+    {Writes, Shown, States1} =
+        lists:foldl(fun({Oid, V}, {Ws, Sh, Sts}) ->
                             case Routes of
                                 #{Oid := Rs} ->
                                     {W, Sts1} = s2i_sample:apply(Rs, V, Ctx, Sts),
-                                    {Ws ++ W, Sts1};
+                                    {Ws ++ W, [{Oid, V, Rs, W} | Sh], Sts1};
                                 _ ->
-                                    {Ws, Sts}
+                                    {Ws, Sh, Sts}
                             end
-                    end, {[], States}, Values),
+                    end, {[], [], States}, Values),
     publish(Writes),
+    debug_values(Source, lists:reverse(Shown), State),
     State#{states := States1}.
+
+%% values:device:<name>: every routed value with the writes it caused
+%% (none: unchanged or within the deadband).
+debug_values(_Source, [], _State) ->
+    ok;
+debug_values(Source, Shown, #{name := Name}) ->
+    Topic = <<"values:device:", Name/binary>>,
+    case s2i_debug:active(Topic) of
+        true ->
+            s2i_debug:publish(Topic, #{source => Source,
+                                       values => [#{oid => Oid, value => V, writes => W,
+                                                    datapoints => lists:usort([D || #{datapoint := D} <- Rs])}
+                                                  || {Oid, V, Rs, W} <- Shown]});
+        false ->
+            ok
+    end.
+
+%% snmp:trace:<name>: requests and what came back.
+trace(Event, #{name := Name}) ->
+    Topic = <<"snmp:trace:", Name/binary>>,
+    case s2i_debug:active(Topic) of
+        true -> s2i_debug:publish(Topic, Event);
+        false -> ok
+    end.
+
+purpose({poll, G}) -> #{poll => G};
+purpose({walk, R}) -> #{resolve => R};
+purpose({tool_get, _}) -> tool;
+purpose({tool_walk, _}) -> tool;
+purpose(once) -> once.
 
 uptime(Sample, #{uptime := Prev, states := States, name := Name} = State) ->
     case s2i_poll:uptime(Prev, Sample) of
@@ -516,17 +562,19 @@ trap(Info, #{rules := Rules, routes := Routes, name := Name, traps := N} = State
     {Actions, Misses} = s2i_trap_match:match(Trap, Rules, Routes),
     [logger:debug("SNMP device ~ts: trap rule ~ts matched, but found ~p", [Name, R, Why])
      || {R, Why} <- Misses],
+    ok = s2i_debug:publish(<<"traps">>, Trap#{device => Name, misses => Misses,
+                                              matched => lists:usort([S || #{source := S} <- Actions])}),
     case Actions of
         [] ->
             logger:debug("SNMP device ~ts: unmatched trap ~p", [Name, TrapOid]),
             State#{unmatched := maps:get(unmatched, State) + 1};
         _ ->
-            after_trap(Actions, trap_values([{O, V} || #{oid := O, value := V} <- Actions], State))
+            after_trap(Actions, trap_values([{O, V} || #{oid := O, value := V} <- Actions], trap, State))
     end.
 
-trap_values(Values, #{trap_at := TrapAt} = State) ->
+trap_values(Values, Source, #{trap_at := TrapAt} = State) ->
     Now = now_ms(),
-    publish_values(Values, State#{trap_at := maps:merge(TrapAt, #{O => Now || {O, _} <- Values})}).
+    publish_values(Values, Source, State#{trap_at := maps:merge(TrapAt, #{O => Now || {O, _} <- Values})}).
 
 after_trap(Actions, #{resets := Resets0} = State) ->
     Resets = lists:foldl(
@@ -575,6 +623,7 @@ health(_Old, down, #{name := Name, routes := #{routes := Routes}, states := Stat
     logger:warning("SNMP device ~ts is down", [Name]),
     {Writes, States1} = s2i_sample:invalidate(lists:append(maps:values(Routes)), States),
     publish(Writes),
+    ok = s2i_debug:publish(<<"values:device:", Name/binary>>, #{source => down, writes => Writes}),
     comm_status(false, State#{health := down, states := States1});
 health(down, up, #{name := Name} = State) ->
     logger:notice("SNMP device ~ts is up again", [Name]),

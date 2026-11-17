@@ -65,6 +65,7 @@ handle_agent(_Domain, {Ip, _Port} = Addr, Type, Info, _Data) when Type =:= trap;
             ignore;
         [] ->
             logger:debug("SNMP ~p from unknown agent ~ts", [Type, format(Addr)]),
+            debug_unknown(Addr, Info),
             ignore;
         [_ | _] ->
             logger:warning("SNMP ~p from ~ts dropped: several devices use this IP address",
@@ -74,6 +75,16 @@ handle_agent(_Domain, {Ip, _Port} = Addr, Type, Info, _Data) when Type =:= trap;
 handle_agent(Domain, Addr, Type, _Info, _Data) ->
     logger:debug("SNMP ~p from unregistered agent ~p ~p", [Type, Domain, Addr]),
     ignore.
+
+%% Unattributed traps still show up in the debug trap log.
+debug_unknown({Ip, Port}, Info) ->
+    try s2i_trap_match:normalize(Info) of
+        Trap ->
+            ok = s2i_debug:publish(<<"traps">>, Trap#{device => null, matched => [], misses => [],
+                                                      from => iolist_to_binary(format({Ip, Port}))})
+    catch
+        _:_ -> ok
+    end.
 
 format({Ip, Port}) ->
     io_lib:format("~ts:~b", [inet:ntoa(Ip), Port]).

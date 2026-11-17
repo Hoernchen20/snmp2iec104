@@ -11,6 +11,9 @@ erl_crash.dump
 /Mnesia.*/
 /frontend/node_modules/
 /frontend/dist/
+/frontend/openapi.json
+# web UI build output (npm run build in frontend/)
+/apps/s2i_web/priv/www/
 
 # secret key for stored SNMP credentials (never commit)
 secret.key

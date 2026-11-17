@@ -860,7 +860,9 @@ js({const, V}) -> #{type => string, const => V}.
 
 js_object(Fields) ->
     Props = maps:from_list([{K, js_field(S, Presence)} || {K, S, Presence} <- Fields]),
-    Base = #{type => object, properties => Props, additionalProperties => false},
+    %% x-order: the fields in spec order (JSON objects are unordered), for forms
+    Base = #{type => object, properties => Props, additionalProperties => false,
+             'x-order' => [K || {K, _, _} <- Fields]},
     case [K || {K, _, required} <- Fields] of
         [] -> Base;
         Required -> Base#{required => Required}

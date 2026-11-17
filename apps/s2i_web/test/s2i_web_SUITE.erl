@@ -1,7 +1,7 @@
 -module(s2i_web_SUITE).
 -moduledoc """
-REST API end to end (docs/DESIGN.md §9.1, §9.2): the whole gateway with an
-HTTP listener on a free port, driven with `httpc`. The cases share one
+REST API and WebSocket end to end (docs/DESIGN.md §9): the whole gateway
+with an HTTP listener on a free port, driven with `httpc` and `gun` (WS). The cases share one
 gateway and run in order; the first one completes the bootstrap admin's
 forced password change.
 """.
@@ -27,6 +27,14 @@ forced password change.
          logout_ends_session/1,
          status_of_devices_and_servers/1,
          snmp_tools_through_device/1,
+         ws_upgrade_needs_session_and_origin/1,
+         ws_protocol_errors_and_ping/1,
+         ws_device_values_and_trace/1,
+         ws_server_values_and_groups/1,
+         ws_traps_with_history/1,
+         ws_log_with_level/1,
+         ws_closed_when_session_ends/1,
+         static_ui_and_spa_fallback/1,
          idle_session_expires/1,
          openapi_is_public/1]).
 
@@ -54,6 +62,14 @@ all() ->
      logout_ends_session,
      status_of_devices_and_servers,
      snmp_tools_through_device,
+     ws_upgrade_needs_session_and_origin,
+     ws_protocol_errors_and_ping,
+     ws_device_values_and_trace,
+     ws_server_values_and_groups,
+     ws_traps_with_history,
+     ws_log_with_level,
+     ws_closed_when_session_ends,
+     static_ui_and_spa_fallback,
      idle_session_expires,
      openapi_is_public].
 
@@ -72,6 +88,7 @@ init_per_suite(Config) ->
     ok = application:set_env(s2i_web, admin_password, ?BOOT_PW),
     {ok, Started} = application:ensure_all_started(snmp2iec104),
     {ok, _} = application:ensure_all_started(inets),
+    {ok, _} = application:ensure_all_started(gun),
     {ok, Agent} = s2i_fake_agent:start(),
     ok = s2i_fake_agent:set(Agent, [1, 3, 6, 1, 4, 1, 99999, 1, 0], {'INTEGER', 215}),
     ok = s2i_fake_agent:set(Agent, [1, 3, 6, 1, 4, 1, 99999, 2, 0], {'INTEGER', 1}),
@@ -312,7 +329,9 @@ status_of_devices_and_servers(Config) ->
                       #{<<"name">> := <<"scada">>, <<"state">> := <<"running">>} = Srv,
                       maps:get(<<"health">>, D) =:= <<"up">> andalso maps:get(<<"points">>, Srv) > 0
               end),
-    {200, _, #{<<"health">> := <<"up">>, <<"cycles">> := _}} = req(Config, get, "status/devices/sw-a", A),
+    {200, _, #{<<"health">> := <<"up">>, <<"cycles">> := _, <<"last_ok">> := LastOk, <<"error">> := null}} =
+        req(Config, get, "status/devices/sw-a", A),
+    ?assert(is_integer(LastOk)),
     {404, _, _} = req(Config, get, "status/devices/nope", A),
     {200, _, [#{<<"name">> := <<"scada">>}]} = req(Config, get, "status/servers", A).
 
@@ -346,6 +365,202 @@ snmp_tools_through_device(Config) ->
     {504, _, #{<<"error">> := <<"timeout">>}} =
         req(Config, post, "tools/snmp/get", A, #{device => <<"sw-a">>, oids => [<<"1.3.6.1.2.1.1.3.0">>]}),
     ok = s2i_fake_agent:silent(Agent, false).
+
+%%% --- WebSocket (§9.3) -------------------------------------------------------
+
+ws_upgrade_needs_session_and_origin(Config) ->
+    {error, 401} = ws_open(none, []),
+    {error, 401} = ws_open("s2i_session=forged", []),
+    A = admin(Config),
+    {error, 403} = ws_open(A, [{<<"origin">>, <<"https://evil.example">>}]),
+    {ok, W1} = ws_open(A, [{<<"origin">>, <<"http://127.0.0.1:1234">>}]),
+    ws_close(W1),
+    {ok, W2} = ws_open(A, []),                  % no Origin: not a browser
+    ws_close(W2),
+    %% a viewer may debug, a user with a pending password change may not
+    V = login(Config, <<"view">>, <<"viewer-password">>),
+    {ok, W3} = ws_open(V, []),
+    ws_close(W3),
+    {200, _, _} = req(Config, put, "users/fresh", A, #{role => viewer, password => <<"fresh-password">>}),
+    F = login(Config, <<"fresh">>, <<"fresh-password">>),
+    {error, 403} = ws_open(F, []),
+    {204, _, _} = req(Config, delete, "users/fresh", A).
+
+ws_protocol_errors_and_ping(Config) ->
+    {ok, W} = ws_open(admin(Config), []),
+    ws_send(W, #{op => ping}),
+    #{<<"type">> := <<"pong">>} = ws_recv(W, <<"pong">>),
+    ws_send(W, #{op => subscribe, topic => <<"secrets">>}),
+    #{<<"error">> := <<"invalid_topic">>} = ws_recv(W, <<"error">>),
+    ws_send_raw(W, <<"{not json">>),
+    #{<<"error">> := <<"invalid_json">>} = ws_recv(W, <<"error">>),
+    ws_send(W, #{op => subscribe, topic => <<"log">>, level => <<"loud">>}),
+    #{<<"error">> := <<"invalid_level">>} = ws_recv(W, <<"error">>),
+    [begin
+         ws_send(W, #{op => subscribe, topic => <<"values:device:d", (integer_to_binary(I))/binary>>}),
+         #{<<"type">> := <<"subscribed">>} = ws_recv(W, <<"subscribed">>)
+     end || I <- lists:seq(1, 32)],
+    ws_send(W, #{op => subscribe, topic => <<"traps">>}),
+    #{<<"error">> := <<"too_many_subscriptions">>} = ws_recv(W, <<"error">>),
+    ws_send(W, #{op => unsubscribe, topic => <<"values:device:d1">>}),
+    #{<<"topic">> := <<"values:device:d1">>} = ws_recv(W, <<"unsubscribed">>),
+    ws_close(W).
+
+ws_device_values_and_trace(Config) ->
+    Agent = ?config(agent, Config),
+    {ok, W} = ws_open(admin(Config), []),
+    ws_send(W, #{op => subscribe, topic => <<"values:device:sw-a">>}),
+    #{<<"snapshot">> := [P]} = ws_recv(W, <<"subscribed">>),
+    #{<<"server">> := <<"scada">>, <<"coa">> := 1, <<"ioa">> := 100, <<"source">> := <<"sw-a/temperature">>,
+      <<"point">> := #{<<"type">> := <<"m_me_tf_1">>}} = P,
+    ok = s2i_fake_agent:set(Agent, [1, 3, 6, 1, 4, 1, 99999, 1, 0], {'INTEGER', 230}),
+    Ev = ws_recv(W, fun(#{<<"type">> := <<"event">>,
+                          <<"event">> := #{<<"values">> := [#{<<"writes">> := [_]}]}}) -> true;
+                       (_) -> false
+                    end),
+    #{<<"topic">> := <<"values:device:sw-a">>,
+      <<"event">> := #{<<"source">> := <<"poll">>, <<"at">> := At,
+                       <<"values">> := [#{<<"oid">> := <<"1.3.6.1.4.1.99999.1.0">>,
+                                          <<"value">> := #{<<"type">> := <<"integer">>, <<"value">> := 230},
+                                          <<"datapoints">> := [<<"sw-a/temperature">>],
+                                          <<"writes">> := [#{<<"server">> := <<"scada">>, <<"ioa">> := 100,
+                                                             <<"point">> := #{<<"value">> := Value}}]}]}} = Ev,
+    true = is_integer(At),
+    ?assert(abs(Value - 23.0) < 1.0e-6),
+    %% SNMP trace: request and response of a poll
+    ws_send(W, #{op => subscribe, topic => <<"snmp:trace:sw-a">>}),
+    #{<<"history">> := []} = ws_recv(W, <<"subscribed">>),
+    #{<<"event">> := #{<<"op">> := <<"get">>, <<"req_id">> := Id, <<"oids">> := Oids,
+                       <<"purpose">> := #{<<"poll">> := <<"fast">>}}} =
+        ws_recv(W, fun(#{<<"topic">> := <<"snmp:trace:sw-a">>, <<"event">> := #{<<"dir">> := <<"request">>}}) -> true;
+                      (_) -> false
+                   end),
+    ?assert(lists:member(<<"1.3.6.1.4.1.99999.1.0">>, Oids)),
+    #{<<"event">> := #{<<"error_status">> := <<"noError">>, <<"varbinds">> := [_ | _]}} =
+        ws_recv(W, fun(#{<<"topic">> := <<"snmp:trace:sw-a">>,
+                         <<"event">> := #{<<"dir">> := <<"response">>, <<"req_id">> := I}}) -> I =:= Id;
+                      (_) -> false
+                   end),
+    ws_close(W).
+
+ws_server_values_and_groups(Config) ->
+    Agent = ?config(agent, Config),
+    {ok, W} = ws_open(admin(Config), []),
+    ws_send(W, #{op => subscribe, topic => <<"values:server:scada">>}),
+    #{<<"snapshot">> := [#{<<"coa">> := 1, <<"ioa">> := 100, <<"type">> := <<"m_me_tf_1">>}]} =
+        ws_recv(W, <<"subscribed">>),
+    ok = s2i_fake_agent:set(Agent, [1, 3, 6, 1, 4, 1, 99999, 1, 0], {'INTEGER', 240}),
+    #{<<"event">> := #{<<"points">> := [#{<<"ioa">> := 100, <<"quality">> := []}]}} =
+        ws_recv(W, fun(#{<<"topic">> := <<"values:server:scada">>, <<"type">> := <<"event">>}) -> true;
+                      (_) -> false
+                   end),
+    %% iec:<server>: groups at once and then periodically; a connection is an event
+    ws_send(W, #{op => subscribe, topic => <<"iec:scada">>}),
+    #{<<"groups">> := G0} = ws_recv(W, <<"subscribed">>),
+    ?assert(is_list(G0)),
+    {ok, Sock} = gen_tcp:connect({127, 0, 0, 1}, ?config(iec_port, Config), [binary, {active, false}]),
+    ok = gen_tcp:send(Sock, <<16#68, 4, 16#07, 0, 0, 0>>),     % STARTDT act
+    {ok, <<16#68, 4, 16#0B, 0, 0, 0>>} = gen_tcp:recv(Sock, 6, 5000),
+    #{<<"event">> := #{<<"event">> := <<"activated">>, <<"conn">> := <<"<", _/binary>>}} =
+        ws_recv(W, fun(#{<<"topic">> := <<"iec:scada">>, <<"type">> := <<"event">>}) -> true;
+                      (_) -> false
+                   end),
+    #{<<"groups">> := [#{<<"active">> := true, <<"members">> := 1}]} =
+        ws_recv(W, fun(#{<<"type">> := <<"groups">>, <<"groups">> := [_]}) -> true;
+                      (_) -> false
+                   end, 5000),
+    ok = gen_tcp:close(Sock),
+    ws_close(W),
+    %% the history of iec:scada now holds the connection events
+    {ok, W2} = ws_open(admin(Config), []),
+    ws_send(W2, #{op => subscribe, topic => <<"iec:scada">>}),
+    #{<<"history">> := [#{<<"event">> := <<"activated">>} | _]} = ws_recv(W2, <<"subscribed">>),
+    ws_close(W2),
+    %% REST status shows the groups as well
+    {200, _, [#{<<"groups">> := Groups}]} = req(Config, get, "status/servers", admin(Config)),
+    ?assert(is_list(Groups)).
+
+ws_traps_with_history(Config) ->
+    Agent = ?config(agent, Config),
+    {ok, W} = ws_open(admin(Config), []),
+    ws_send(W, #{op => subscribe, topic => <<"traps">>}),
+    #{<<"history">> := H0} = ws_recv(W, <<"subscribed">>),
+    To = {{127, 0, 0, 1}, application:get_env(s2i_snmp, port, 162)},
+    ok = s2i_fake_agent:notify(Agent, To, #{version => v2c, trap => [1, 3, 6, 1, 4, 1, 99999, 0, 1],
+                                            varbinds => [{[1, 3, 6, 1, 4, 1, 99999, 1, 0], 'INTEGER', 250}]}),
+    #{<<"event">> := #{<<"device">> := <<"sw-a">>, <<"trap_oid">> := <<"1.3.6.1.4.1.99999.0.1">>,
+                       <<"matched">> := [<<"varbind">>],
+                       <<"varbinds">> := [#{<<"oid">> := <<"1.3.6.1.4.1.99999.1.0">>, <<"value">> := 250}]}} =
+        ws_recv(W, fun(#{<<"topic">> := <<"traps">>, <<"type">> := <<"event">>}) -> true;
+                      (_) -> false
+                   end),
+    ws_close(W),
+    {ok, W2} = ws_open(admin(Config), []),
+    ws_send(W2, #{op => subscribe, topic => <<"traps">>}),
+    #{<<"history">> := H1} = ws_recv(W2, <<"subscribed">>),
+    ?assertEqual(length(H0) + 1, length(H1)),
+    ws_close(W2).
+
+ws_log_with_level(Config) ->
+    {ok, W} = ws_open(admin(Config), []),
+    ws_send(W, #{op => subscribe, topic => <<"log">>, level => <<"warning">>}),
+    #{<<"history">> := History} = ws_recv(W, <<"subscribed">>),
+    [?assertNotEqual(<<"info">>, L) || #{<<"level">> := L} <- History],
+    logger:info("ws suite: info is filtered"),
+    logger:warning("ws suite: warning passes"),
+    #{<<"event">> := #{<<"level">> := <<"warning">>}} =
+        ws_recv(W, fun(#{<<"topic">> := <<"log">>, <<"event">> := #{<<"msg">> := M}}) ->
+                           M =:= <<"ws suite: info is filtered">> andalso error(info_not_filtered),
+                           M =:= <<"ws suite: warning passes">>;
+                      (_) -> false
+                   end),
+    ws_close(W).
+
+ws_closed_when_session_ends(Config) ->
+    A = admin(Config),
+    {ok, W} = ws_open(A, []),
+    ws_send(W, #{op => ping}),
+    _ = ws_recv(W, <<"pong">>),
+    {204, _, _} = req(Config, post, "logout", A),
+    {4001, _} = ws_wait_close(W, 5000).
+
+%%% --- static UI ----------------------------------------------------------------
+
+static_ui_and_spa_fallback(Config) ->
+    Root = "http://127.0.0.1:" ++ integer_to_list(s2i_web_sup:port(http)),
+    Get = fun(Path) ->
+                  {ok, {{_, St, _}, H, B}} = httpc:request(get, {Root ++ Path, []}, [], [{body_format, binary}]),
+                  {St, H, B}
+          end,
+    %% no build: a hint, the API still works
+    ok = application:set_env(s2i_web, www_dir, filename:join(?config(priv_dir, Config), "no-www")),
+    {404, _, Hint} = Get("/"),
+    ?assertNotEqual(nomatch, binary:match(Hint, <<"npm run build">>)),
+    Www = filename:join(?config(priv_dir, Config), "www"),
+    ok = filelib:ensure_dir(filename:join([Www, "assets", "x"])),
+    ok = file:write_file(filename:join(Www, "index.html"), <<"<!doctype html><title>ui</title>">>),
+    ok = file:write_file(filename:join([Www, "assets", "app-1234.js"]), <<"console.log(1)">>),
+    ok = application:set_env(s2i_web, www_dir, Www),
+    try
+        {200, H1, <<"<!doctype html>", _/binary>>} = Get("/"),
+        "text/html" ++ _ = proplists:get_value("content-type", H1),
+        "no-cache" = proplists:get_value("cache-control", H1),
+        "DENY" = proplists:get_value("x-frame-options", H1),
+        "default-src 'self'" ++ _ = proplists:get_value("content-security-policy", H1),
+        %% client-side routes get the index
+        {200, _, <<"<!doctype html>", _/binary>>} = Get("/devices/sw-a"),
+        {200, H2, <<"console.log(1)">>} = Get("/assets/app-1234.js"),
+        ?assertNotEqual(nomatch, string:find(proplists:get_value("content-type", H2), "javascript")),
+        "public, max-age=31536000, immutable" = proplists:get_value("cache-control", H2),
+        {404, _, _} = Get("/assets/missing.js"),
+        {404, _, _} = Get("/favicon.ico"),
+        {404, _, _} = Get("/%2e%2e/%2e%2e/etc/passwd.txt"),
+        {404, _, _} = Get("/.hidden"),
+        %% the API is not shadowed
+        {401, _, _} = Get("/api/v1/devices")
+    after
+        application:unset_env(s2i_web, www_dir)
+    end.
 
 idle_session_expires(Config) ->
     ok = application:set_env(s2i_web, session_idle_timeout, 300),
@@ -385,6 +600,59 @@ device(Port) ->
       snmp => #{version => v2c, community => <<"public">>},
       timeout => 300, retries => 1, profile => ?PROFILE, ioa_base => 100,
       targets => #{<<"default">> => [#{server => <<"scada">>, coa => 1}]}}.
+
+%%% ===========================================================================
+%%% WebSocket helpers (gun)
+%%% ===========================================================================
+
+ws_open(Cookie, Headers) ->
+    {ok, C} = gun:open("127.0.0.1", s2i_web_sup:port(http), #{protocols => [http], retry => 0}),
+    {ok, http} = gun:await_up(C, 5000),
+    Ref = gun:ws_upgrade(C, "/ws", [{<<"cookie">>, list_to_binary(Cookie)} || Cookie =/= none] ++ Headers),
+    receive
+        {gun_upgrade, C, Ref, [<<"websocket">>], _} ->
+            {ok, {C, Ref}};
+        {gun_response, C, Ref, _, Status, _} ->
+            gun:close(C),
+            {error, Status}
+    after 5000 ->
+            error(ws_upgrade_timeout)
+    end.
+
+ws_close({C, _Ref}) ->
+    gun:close(C).
+
+ws_send(W, Msg) ->
+    ws_send_raw(W, iolist_to_binary(json:encode(Msg))).
+
+ws_send_raw({C, Ref}, Bin) ->
+    ok = gun:ws_send(C, Ref, {text, Bin}).
+
+%% The next message of `Type` (or matching `Pred`); others are skipped.
+ws_recv(W, Type) when is_binary(Type) ->
+    ws_recv(W, fun(#{<<"type">> := T}) -> T =:= Type end);
+ws_recv(W, Pred) ->
+    ws_recv(W, Pred, 10000).
+
+ws_recv({C, Ref} = W, Pred, Timeout) ->
+    receive
+        {gun_ws, C, Ref, {text, Bin}} ->
+            Msg = json:decode(Bin),
+            case Pred(Msg) of
+                true -> Msg;
+                false -> ws_recv(W, Pred, Timeout)
+            end
+    after Timeout ->
+            error(ws_recv_timeout)
+    end.
+
+ws_wait_close({C, Ref} = W, Timeout) ->
+    receive
+        {gun_ws, C, Ref, {close, Code, Reason}} -> {Code, Reason};
+        {gun_ws, C, Ref, _} -> ws_wait_close(W, Timeout)
+    after Timeout ->
+            error(ws_close_timeout)
+    end.
 
 %%% ===========================================================================
 %%% HTTP helpers

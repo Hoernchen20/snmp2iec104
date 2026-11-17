@@ -21,6 +21,7 @@ init([]) ->
         s2i_config:child_spec(),
         s2i_iec_sup:child_spec(),
         s2i_snmp_sup:child_spec(),
+        s2i_debug_sup:child_spec(),
         s2i_web_sup:child_spec()
     ],
     {ok, {#{strategy => rest_for_one, intensity => 5, period => 10}, Children}}.

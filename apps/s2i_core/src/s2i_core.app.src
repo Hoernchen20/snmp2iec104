@@ -1,7 +1,7 @@
 {application, s2i_core, [
     {description, "snmp2iec104: config, validation, transforms, routing"},
     {vsn, "0.1.0"},
-    {registered, [s2i_config]},
+    {registered, [s2i_config, s2i_debug_sup, s2i_debug, s2i_debug_pg]},
     {applications, [
         kernel,
         stdlib,
@@ -10,7 +10,11 @@
     ]},
     {env, [
         %% base64 AES-256 key for stored SNMP secrets, created if missing
-        {secret_key_file, "etc/secret.key"}
+        {secret_key_file, "etc/secret.key"},
+        %% debug topics (s2i_debug): history per buffered topic, log handler level
+        {debug_history, 200},
+        {debug_log_history, 500},
+        {debug_log_level, info}
     ]},
     {modules, []}
 ]}.

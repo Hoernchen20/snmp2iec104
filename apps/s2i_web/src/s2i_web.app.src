@@ -18,7 +18,13 @@
         {admin_user, "admin"},
         {initial_password_file, "data/initial_admin_password"},
         {session_idle_timeout, 1800000},
-        {session_max_age, 43200000}
+        {session_max_age, 43200000},
+        %% WebSocket /ws: events per second and connection (excess dropped);
+        %% extra allowed Origins besides the gateway's own host, e.g.
+        %% ["http://localhost:5173"]
+        {ws_rate_limit, 500},
+        {ws_allowed_origins, []}
+        %% www_dir: the built UI, default priv/www of this app
     ]},
     {modules, []}
 ]}.

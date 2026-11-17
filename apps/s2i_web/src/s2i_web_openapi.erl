@@ -1,7 +1,8 @@
 -module(s2i_web_openapi).
 -moduledoc """
 OpenAPI 3.1 description of `/api/v1`, served at `GET /api/v1/openapi.json`
-and used to generate the TypeScript client types of the UI (phase 7).
+and used to generate the TypeScript client types of the UI
+(`frontend/src/api/schema.d.ts`, `npm run gen:api`).
 
 The entity schemas (`Server`, `Device`, `Profile`) are generated from
 `s2i_schema` (`json_schema/1`); the paths here follow `s2i_web_rest:routes/0`,
@@ -83,10 +84,21 @@ schemas() ->
                                           resolved => #{type => object},
                                           unresolved => #{type => array, items => #{type => string}},
                                           error => #{}}},
-      'ServerStatus' => #{type => object, required => [name, state, points],
+      'ServerStatus' => #{type => object, required => [name, state, points, groups],
                           properties => #{name => #{type => string},
                                           state => #{type => string, enum => [running, start_failed, not_running]},
-                                          points => #{type => integer}}},
+                                          points => #{type => integer},
+                                          groups => #{type => array, items => ref('GroupStatus')}}},
+      'GroupStatus' => #{type => object, required => [name, active, members, buffer_len],
+                         description => <<"redundancy group of a running server">>,
+                         properties => #{name => #{type => string,
+                                                   description => <<"configured name, `default`, or "
+                                                                    "`connection` (one group per connection)">>},
+                                         active => #{type => boolean,
+                                                     description => <<"a connection is the active one (STARTDT)">>},
+                                         members => #{type => integer, description => <<"open connections">>},
+                                         buffer_len => #{type => integer,
+                                                         description => <<"ASDUs not yet acknowledged">>}}},
       'Varbind' => #{type => object, required => [oid, type, value],
                      properties => #{oid => #{type => string}, type => #{type => string},
                                      value => #{description => <<"integer, text, dotted OID / address, an "

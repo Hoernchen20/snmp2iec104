@@ -18,7 +18,7 @@ sweep runs in this process.
 -behaviour(gen_server).
 
 -export([start_link/0, child_spec/0]).
--export([create/1, lookup/1, delete/1, delete_user/1, delete_user/2, count/0]).
+-export([create/1, lookup/1, peek/1, delete/1, delete_user/1, delete_user/2, count/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -define(TAB, ?MODULE).
@@ -47,14 +47,25 @@ create(User) ->
 
 -doc "The session's user; refreshes the idle timer.".
 -spec lookup(term()) -> {ok, binary()} | error.
-lookup(Token) when is_binary(Token) ->
+lookup(Token) ->
+    lookup(Token, true).
+
+-doc """
+The session's user without refreshing the idle timer (an open WebSocket
+does not keep a session alive on its own).
+""".
+-spec peek(term()) -> {ok, binary()} | error.
+peek(Token) ->
+    lookup(Token, false).
+
+lookup(Token, Touch) when is_binary(Token) ->
     Key = key(Token),
     Now = now_ms(),
     case ets:lookup(?TAB, Key) of
         [{_, User, Created, Seen}] ->
             case expired(Created, Seen, Now) of
                 false ->
-                    _ = ets:update_element(?TAB, Key, {4, Now}),
+                    _ = Touch andalso ets:update_element(?TAB, Key, {4, Now}),
                     {ok, User};
                 true ->
                     _ = ets:delete(?TAB, Key),
@@ -63,7 +74,7 @@ lookup(Token) when is_binary(Token) ->
         [] ->
             error
     end;
-lookup(_) ->
+lookup(_, _) ->
     error.
 
 -spec delete(term()) -> ok.

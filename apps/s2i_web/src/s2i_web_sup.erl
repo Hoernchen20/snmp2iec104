@@ -1,7 +1,9 @@
 -module(s2i_web_sup).
 -moduledoc """
 Root of the web side (docs/DESIGN.md §4, §9): the session table and the
-cowboy listeners, embedded as ranch children of this supervisor.
+cowboy listeners, embedded as ranch children of this supervisor. Routes:
+`/api/v1/[...]` (`s2i_web_api`), `/ws` (`s2i_web_ws`), everything else the
+built UI (`s2i_web_static`).
 
 Listeners (`s2i_web` env, each optional; port 0 picks a free port):
 
@@ -38,7 +40,9 @@ port(Kind) ->
 -spec init([]) -> {ok, {supervisor:sup_flags(), [supervisor:child_spec()]}}.
 init([]) ->
     ok = bootstrap_admin(),
-    Dispatch = cowboy_router:compile([{'_', [{"/api/v1/[...]", s2i_web_api, #{}}]}]),
+    Dispatch = cowboy_router:compile([{'_', [{"/api/v1/[...]", s2i_web_api, #{}},
+                                             {"/ws", s2i_web_ws, #{}},
+                                             {"/[...]", s2i_web_static, #{}}]}]),
     Proto = #{env => #{dispatch => Dispatch}},
     Listeners = [listener(K, Opts, Proto) || K <- [http, https],
                                              {ok, Opts} <- [application:get_env(s2i_web, K)]],

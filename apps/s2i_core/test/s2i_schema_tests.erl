@@ -515,6 +515,14 @@ json_schema_required_and_defaults_test() ->
     ?assertMatch(#{type := integer, minimum := 1, maximum := 65535, default := 161}, maps:get(port, Props)),
     ?assertMatch(#{type := boolean, default := true}, maps:get(enabled, Props)).
 
+json_schema_field_order_test() ->
+    %% x-order keeps the spec order for forms; it lists exactly the properties
+    #{properties := Props, 'x-order' := Order} = s2i_schema:json_schema(device),
+    ?assertMatch([name, description, enabled, host | _], Order),
+    ?assertEqual(lists:sort(maps:keys(Props)), lists:sort(Order)),
+    #{properties := #{transport := #{oneOf := [#{'x-order' := [kind, port, ip]} | _]}}} =
+        s2i_schema:json_schema(server).
+
 json_schema_union_test() ->
     #{properties := #{snmp := #{oneOf := Variants, discriminator := #{propertyName := version}}}} =
         s2i_schema:json_schema(device),

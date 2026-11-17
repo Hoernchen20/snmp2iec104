@@ -11,7 +11,7 @@ is maintained by `s2i_iec_mgr`; values are written by `s2i_iec:publish/2`.
 -behaviour(gen_server).
 
 -export([start_link/0, child_spec/0]).
--export([points/0, values/1, add/4, remove/2, set/3, get/2]).
+-export([points/0, values/1, device_values/1, add/4, remove/2, set/3, get/2]).
 -export([init/1, handle_call/3, handle_cast/2]).
 
 -define(TAB, ?MODULE).
@@ -37,6 +37,22 @@ points() ->
 -spec values(binary()) -> [{addr(), map()}].
 values(Server) ->
     [{{C, I}, Spec} || [C, I, Spec] <- ets:match(?TAB, {{Server, '$1', '$2'}, '_', '$3'})].
+
+-doc """
+Points fed by device `Device` (its datapoints `<device>/...` and its
+comm-status point) with their current value: `[{Server, Addr, Point, Spec}]`.
+""".
+-spec device_values(binary()) -> [{binary(), addr(), map(), map()}].
+device_values(Device) ->
+    Prefix = <<Device/binary, "/">>,
+    N = byte_size(Prefix),
+    lists:sort(ets:foldl(fun({{S, C, I}, #{source := Src} = P, Spec}, Acc) ->
+                                 case Src of
+                                     {datapoint, <<Prefix:N/binary, _/binary>>} -> [{S, {C, I}, P, Spec} | Acc];
+                                     {comm_status, Device} -> [{S, {C, I}, P, Spec} | Acc];
+                                     _ -> Acc
+                                 end
+                         end, [], ?TAB)).
 
 -spec add(binary(), addr(), map(), map()) -> ok.
 add(Server, {C, I}, Point, Spec) ->

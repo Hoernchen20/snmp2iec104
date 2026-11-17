@@ -15,7 +15,7 @@ unchanged keeps the secret.
 -behaviour(cowboy_handler).
 
 -export([init/2]).
--export([cookie_name/0]).
+-export([cookie_name/0, authorize/2, error_reply/3]).
 
 -define(COOKIE, <<"s2i_session">>).
 -define(MAX_BODY, 8 * 1024 * 1024).
@@ -61,6 +61,28 @@ handle(Req0) ->
                     error_reply(Code, [], Req0)
             end
     end.
+
+-doc """
+Session check for other handlers (the WebSocket upgrade, a `GET`): the
+session token and user if the caller has `Access`, else the error code.
+""".
+-spec authorize(cowboy_req:req(), s2i_web_rest:access()) ->
+          {ok, binary(), s2i_users:user()} | {error, atom()}.
+authorize(Req, Access) ->
+    {Token, User} = caller(Req),
+    case s2i_web_rest:check(Access, <<"GET">>, {caller_access(User), #{csrf => false}}) of
+        ok -> {ok, Token, User};
+        Error -> Error
+    end.
+
+-doc "A JSON error reply in the REST format.".
+-spec error_reply(atom(), list(), cowboy_req:req()) -> cowboy_req:req().
+error_reply(Code, Errors, Req) ->
+    Body = case Errors of
+               [] -> #{error => Code};
+               _ -> #{error => Code, errors => Errors}
+           end,
+    reply(s2i_web_rest:status(Code), Body, Req).
 
 caller(Req) ->
     Cookies = cowboy_req:parse_cookies(Req),
@@ -114,13 +136,6 @@ reply(Status, Body, Req) ->
 
 headers() ->
     #{<<"cache-control">> => <<"no-store">>, <<"x-content-type-options">> => <<"nosniff">>}.
-
-error_reply(Code, Errors, Req) ->
-    Body = case Errors of
-               [] -> #{error => Code};
-               _ -> #{error => Code, errors => Errors}
-           end,
-    reply(s2i_web_rest:status(Code), Body, Req).
 
 -spec throw_error(atom(), cowboy_req:req()) -> no_return().
 throw_error(Code, Req) ->
@@ -405,7 +420,8 @@ running_status(_Name, false) ->
     #{health => disabled};
 running_status(Name, true) ->
     try s2i_device:status(Name) of
-        {ok, S} -> S;
+        %% `undefined` (no good poll yet, no error) is JSON null
+        {ok, S} -> maps:map(fun(_, undefined) -> null; (_, V) -> V end, S);
         {error, not_running} -> #{health => not_running}
     catch
         exit:_ -> #{health => not_running}
@@ -418,9 +434,13 @@ server_status() ->
               end,
     Running = try s2i_iec_mgr:status() catch exit:_ -> #{} end,
     Points = s2i_live:points(),
-    [#{name => Name, state => maps:get(Name, Running, not_running),
-       points => map_size(maps:get(Name, Points, #{}))}
-     || Name := _ <- maps:iterator(Servers, ordered)].
+    [#{name => Name, state => State,
+       points => map_size(maps:get(Name, Points, #{})),
+       groups => case State of
+                     running -> s2i_iec:groups(Name);
+                     _ -> []
+                 end}
+     || Name := _ <- maps:iterator(Servers, ordered), State <- [maps:get(Name, Running, not_running)]].
 
 set_cookie(Token, Req) ->
     cowboy_req:set_resp_cookie(?COOKIE, Token, Req,

@@ -1,7 +1,8 @@
 # snmp2iec104 — Design
 
-Status: **phases 0–6 implemented** (config, expansion, IEC side, SNMP
-polling, traps/informs, REST API + auth); the UI follows (§12). Scope of v1: monitoring direction
+Status: **phases 0–7 implemented** (config, expansion, IEC side, SNMP
+polling, traps/informs, REST API + auth, web UI + WebSocket debugging); the
+MIB library follows (§12, §13). Scope of v1: monitoring direction
 only, SNMP → IEC 60870-5-104.
 
 ## 1. Scope and goals
@@ -93,7 +94,8 @@ s2i_sup                                 rest_for_one
 │   │                   resolution, poll groups (drift-free schedule),
 │   │                   health (up | degraded | down), traps/informs
 │   └── s2i_snmp_mgr    reconciler: desired devices ↔ running s2i_device
-├── s2i_debug           ring buffers (trap log, SNMP trace, events), pg topics
+├── s2i_debug_sup       one_for_all: pg scope s2i_debug_pg + s2i_debug
+│                       (ring buffers of the buffered topics, log handler)
 └── s2i_web_sup         cowboy listener(s), session table
 ```
 
@@ -565,16 +567,19 @@ As implemented (phase 6):
   keeps the secret; a plaintext value replaces it.
 - Status: devices of the active configuration with `s2i_device:status/1`
   (health, counters, resolution), IEC servers with `running | start_failed`
-  (`s2i_iec_mgr:status/0`) and their point count. Connections and active
-  redundancy group members come with the debug topics (§9.3).
+  (`s2i_iec_mgr:status/0`), their point count and (phase 7) their
+  redundancy groups (`s2i_iec:groups/1`: active connection yes/no, open
+  connections, unacknowledged ASDUs). Values not known yet (`last_ok`
+  before the first good poll, `error`) are `null`.
 - SNMP tools go through a configured, running device (`s2i_device:get/2`,
   `walk/3`): the request uses its registration, so no credentials travel in
   API requests. GET is limited to `max_varbinds` OIDs, walk to `max`
   varbinds (default 1000, `truncated` flag); timeouts and retries are the
   device's, results do not count for health.
 - `GET /api/v1/openapi.json` (public): OpenAPI 3.1; the entity schemas are
-  generated from the `s2i_schema` specs (`json_schema/1`), and a test keeps
-  the documented paths equal to the route table.
+  generated from the `s2i_schema` specs (`json_schema/1`, with `x-order` =
+  the field order of the spec, for the UI forms), and a test keeps the
+  documented paths equal to the route table.
 - Errors: `{"error": Code, "errors": [#{path, error, detail}]}`; 400 bad
   request / JSON, 401, 403 (`forbidden`, `csrf`, `password_change_required`),
   404, 405 (`allow` header), 409 (`no_changes`, `last_admin`), 413 (> 8 MB),
@@ -634,6 +639,44 @@ nothing when nobody listens.
 
 Ring buffers in `s2i_debug` give a new subscriber the recent history.
 
+As implemented (phase 7):
+
+- `s2i_debug` (`s2i_core`, so the SNMP and IEC sides can publish without
+  depending on the web app): `publish/2` sends `{s2i_debug, Topic, Event}`
+  to the `pg` members of the topic; producers that build costly events
+  check `active/1` first (one ETS lookup). `publish/2` never fails, also
+  while `s2i_debug_sup` restarts. `traps`, `log` and `iec:*` are *buffered*:
+  they pass through the `s2i_debug` process, which keeps the newest 200
+  (`log`: 500) per topic and returns them on `subscribe/1`. Values and SNMP
+  traces go straight from the producer to the subscribers; a value
+  subscriber gets the current values from `s2i_live` instead of a history.
+- Producers: `s2i_device` publishes every routed value with the IEC writes
+  it caused (`values:device:*`, source poll / trap / auto_reset / down),
+  requests, responses, timeouts, errors and reports (`snmp:trace:*`), and
+  every trap with matched rules and misses (`traps`; traps from unknown
+  agents via `s2i_snmpm_user`); `s2i_iec:publish/2` the accepted values
+  (`values:server:*`); `s2i_iec_callback` connection events (`iec:*`; the
+  connection pid, as erl60870 reports no peer address). The `logger`
+  handler `s2i_debug_log` (level `s2i_core` `debug_log_level`, default
+  `info`) feeds `log`.
+- `/ws` (`s2i_web_ws`, protocol in `s2i_web_ws_proto`): the upgrade needs a
+  session with `viewer` access and an `Origin` of the gateway's own host
+  (or `s2i_web` `ws_allowed_origins`), against cross-site WebSocket
+  hijacking. Client: `{"op": "subscribe" | "unsubscribe", "topic", "level"}`,
+  `{"op": "ping"}`. Server: `subscribed` (history, `snapshot` for value
+  topics, `groups` for `iec:*`), `event`, `groups` (every 2 s for
+  subscribed servers), `dropped`, `error`, `pong`. At most 32 topics per
+  connection and 500 events/s (`ws_rate_limit`; excess dropped and
+  counted). The session is checked every second without refreshing it: an
+  open debug view does not keep a session alive, and logout, expiry, user
+  deletion or a forced password change close the socket with code 4001.
+- UI (`frontend/`, React 19 + TypeScript + Vite + TanStack Query, served
+  by `s2i_web_static` with a strict CSP and SPA fallback): entity forms
+  are generated from the OpenAPI schemas (objects, discriminated unions,
+  maps, arrays, scalar `oneOf`), with the gateway's validation errors shown
+  at their fields and a raw JSON tab; stored secrets stay envelopes unless
+  replaced. Types come from the OpenAPI document (`openapi-typescript`).
+
 ## 10. Testing strategy
 
 | Layer | Tests |
@@ -643,8 +686,9 @@ Ring buffers in `s2i_debug` give a new subscriber the recent history.
 | SNMP | common_test: OTP `snmpa` (v3, spike, traps) and a scripted v1/v2c agent (`s2i_fake_agent`: values, tables, silence, reboots) |
 | IEC | common_test with a minimal test master (APCI + `iec60870_asdu` codec: STARTDT, GI, receive spontaneous) |
 | End to end | `snmpa` → gateway → test master, incl. linkDown race and device-down quality |
-| REST / WS | `httpc` against the whole gateway (`s2i_web_SUITE`); `gun` for WS (phase 7) |
-| Frontend | Vitest + React Testing Library |
+| REST / WS | `httpc` against the whole gateway (`s2i_web_SUITE`); `gun` for the WebSocket (session, origin, every topic, close on logout) |
+| Debug topics | `s2i_debug_SUITE` (history, bounds, logger handler, publish while down); eunit for the WS protocol |
+| Frontend | Vitest + React Testing Library: pure models (form logic, debug reducers, WebSocket client with fake sockets, config diff), components, and every page rendered against API responses recorded from a running gateway |
 
 `rebar3 check` alias: compile + eunit + xref + dialyzer (as in erl60870);
 `rebar3 ct` separately; CI on OTP 27 and 28.
@@ -699,6 +743,12 @@ configuration.
 | 14 | Trap rule targets | datapoint template + table index from a varbind (`suffix` or `value`), looked up per template in the compiled routes; never by guessed index |
 
 ## 15. Open points and planned extensions
+
+- **IEC peer addresses in the debug view:** erl60870's `connection_event/2`
+  carries only the connection pid, and `iec60870_rgroup:info/1` only member
+  pids; showing the SCADA's IP per connection needs the peer address from
+  erl60870 (upstream, like §11). `s2i_iec:groups/1` relies on erl60870's
+  registry names (`{rgroup_sup, Name}`), which are not a documented API.
 
 - **Interface traffic / error metrics** (octet rates, errors, discards): not
   needed in v1, but the design keeps them cheap to add: `rate`/`counter`

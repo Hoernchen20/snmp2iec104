@@ -59,7 +59,7 @@ subtrees_start_in_design_order(_Config) ->
     %% which_children/1 lists children in reverse start order
     Ids = lists:reverse([Id || {Id, Pid, _, _} <- supervisor:which_children(s2i_sup),
                                is_pid(Pid)]),
-    ?assertEqual([s2i_config, s2i_iec_sup, s2i_snmp_sup, s2i_web_sup], Ids),
+    ?assertEqual([s2i_config, s2i_iec_sup, s2i_snmp_sup, s2i_debug_sup, s2i_web_sup], Ids),
     [?assertEqual(Id, element(2, process_info(whereis(Id), registered_name))) || Id <- Ids].
 
 dependencies_are_started(_Config) ->
