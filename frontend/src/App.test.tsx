@@ -2,6 +2,7 @@
 // gateway (src/test/fixtures.json): each renders its content without errors.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
@@ -26,7 +27,8 @@ function serve(overrides: Fx = {}) {
     vi.fn(async (url: string) => {
       const path = url.replace(/^\/api\/v1\//, "");
       if (!(path in data)) return new Response(JSON.stringify({ error: "not_found" }), { status: 404 });
-      const body = data[path];
+      const value = data[path];
+      const body = typeof value === "function" ? (value as () => unknown)() : value;
       if (body instanceof Response) return body;
       return new Response(JSON.stringify(body), { status: 200 });
     }),
@@ -82,6 +84,22 @@ describe("App", () => {
   it("shows the login form without a session", async () => {
     serve({ me: new Response(JSON.stringify({ error: "unauthenticated" }), { status: 401 }) });
     renderAt("/devices");
+    expect(await screen.findByRole("button", { name: "Log in" })).toBeInTheDocument();
+  });
+
+  it("switches pages on log in and log out", async () => {
+    const unauthenticated = () => new Response(JSON.stringify({ error: "unauthenticated" }), { status: 401 });
+    serve({
+      me: unauthenticated,
+      login: { name: "admin", role: "admin", must_change_password: true },
+      logout: () => new Response(null, { status: 204 }),
+    });
+    renderAt("/");
+    await userEvent.type(await screen.findByLabelText("User name"), "admin");
+    await userEvent.type(screen.getByLabelText("Password"), "changeme");
+    await userEvent.click(screen.getByRole("button", { name: "Log in" }));
+    expect(await screen.findByText("Change your password")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Log out" }));
     expect(await screen.findByRole("button", { name: "Log in" })).toBeInTheDocument();
   });
 

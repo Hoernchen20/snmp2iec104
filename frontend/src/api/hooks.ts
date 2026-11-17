@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { del, enc, get, post, put } from "./client";
 import type {
   AuditEntry,
@@ -38,14 +38,19 @@ export function useMe() {
   });
 }
 
+/** A new session: drop the previous user's data, keep the `me` query itself.
+ *  (`qc.clear()` would also remove `me`, and App's useMe observer would stay
+ *  attached to the removed query and never see the new value.) */
+function switchSession(qc: QueryClient, me: Me | null) {
+  qc.removeQueries({ predicate: (q) => q.queryKey[0] !== "me" });
+  qc.setQueryData(["me"], me);
+}
+
 export function useLogin() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (v: { username: string; password: string }) => post<Me>("login", v),
-    onSuccess: (me) => {
-      qc.clear();
-      qc.setQueryData(["me"], me);
-    },
+    onSuccess: (me) => switchSession(qc, me),
   });
 }
 
@@ -53,10 +58,7 @@ export function useLogout() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () => post<void>("logout"),
-    onSettled: () => {
-      qc.clear();
-      qc.setQueryData(["me"], null);
-    },
+    onSettled: () => switchSession(qc, null),
   });
 }
 
