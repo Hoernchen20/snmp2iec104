@@ -29,6 +29,11 @@ test process.
 -define(MGR_ENGINE, "mgrEngine").
 -define(USER, #{name => "s2i", auth => sha, auth_password => "authpass1",
                 priv => aes, priv_password => "privpass1"}).
+%% Unknown-engine-id errors: snmp 5.19 (OTP 28.0) reports {securityError, usmStatsUnknownEngineIDs},
+%% snmp 5.20.2.3 (OTP 28.5) appends [{sec_data, ...}] as a third element.
+-define(UNKNOWN_ENGINE_ID(E), (is_tuple(E) andalso tuple_size(E) >= 2 andalso
+                               element(1, E) =:= securityError andalso
+                               element(2, E) =:= usmStatsUnknownEngineIDs)).
 
 suite() -> [{timetrap, {seconds, 60}}].
 
@@ -172,7 +177,7 @@ v3_trap_needs_user_under_agent_engine_id(Config) ->
     flush(),
     s2i_test_agent:notify(trap, v3),
     receive
-        {error, _, {failed_processing_message, {securityError, usmStatsUnknownEngineIDs}}} -> ok
+        {error, _, {failed_processing_message, Err}} when ?UNKNOWN_ENGINE_ID(Err) -> ok
     after 5000 -> ct:fail(no_error)
     end.
 
@@ -183,7 +188,7 @@ v3_inform_needs_user_under_manager_engine_id(Config) ->
     register_v3(Config, "dev3"),
     s2i_test_agent:notify(inform, v3),
     receive
-        {error, _, {failed_processing_message, {securityError, usmStatsUnknownEngineIDs}}} -> ok
+        {error, _, {failed_processing_message, Err}} when ?UNKNOWN_ENGINE_ID(Err) -> ok
     after 5000 -> ct:fail(no_error)
     end,
     ok = snmpm:register_usm_user(?MGR_ENGINE, "s2i", usm(?MGR_ENGINE)),

@@ -75,7 +75,13 @@ pids() ->
 restart_child(Name) ->
     Pid = whereis(Name),
     Ref = monitor(process, Pid),
-    exit(Pid, kill),
+    %% Crash the supervisor the way it fails for real (e.g. reaching its
+    %% restart intensity): it terminates its children before exiting. A
+    %% brutal `kill` orphans them instead; they shut down asynchronously while
+    %% the parent already restarts the subtree, so registered names such as
+    %% snmpm_supervisor are still taken ({already_started, _}) and the restart
+    %% loop takes the whole application down (seen on slower CI runners).
+    spawn(fun() -> sys:terminate(Pid, crash) end),
     receive {'DOWN', Ref, process, Pid, _} -> ok after 1000 -> ct:fail(no_down) end,
     wait_registered(Name, Pid, 50).
 
